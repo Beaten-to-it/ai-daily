@@ -10,6 +10,11 @@ secrets/
 *.cookies
 .env
 .env.*
+*.pem
+*.key
+*.p12
+*.pfx
+.netrc
 
 # SDD scratch
 .superpowers/
