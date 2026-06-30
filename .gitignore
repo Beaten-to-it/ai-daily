@@ -1,0 +1,15 @@
+# Hugo build output
+/public/
+/resources/_gen/
+.hugo_build.lock
+
+# Secrets — NEVER commit (§10)
+*token*.json
+client_secret*.json
+secrets/
+*.cookies
+.env
+.env.*
+
+# SDD scratch
+.superpowers/
