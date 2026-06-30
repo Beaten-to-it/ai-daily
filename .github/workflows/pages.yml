@@ -32,7 +32,7 @@ jobs:
       - name: Smoke gate (build completeness)
         run: ./scripts/smoke_build.sh
       - name: Build
-        run: hugo --minify --baseURL "${{ steps.pages.outputs.base_url }}/"
+        run: hugo --minify --cleanDestinationDir --baseURL "${{ steps.pages.outputs.base_url }}/"
       - uses: actions/upload-pages-artifact@v3
         with:
           path: ./public
