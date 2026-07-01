@@ -76,3 +76,38 @@ class GenerationResult:
     rationale: str = ""
     error: Optional[str] = None
     def to_dict(self): return asdict(self)
+
+REQUIRED_FRONTMATTER = {"title","date","tags","source_url","source_lang",
+                        "source_type","evidence_level","event_key"}
+
+def parse_frontmatter(md) -> dict:
+    if not isinstance(md, str) or not md.lstrip().startswith("---"):
+        return {}
+    start = md.find("---")
+    end = md.find("---", start + 3)
+    if end == -1:
+        return {}
+    keys = {}
+    for line in md[start+3:end].splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            keys[k.strip()] = v.strip()
+    return keys
+
+def validate_blog_output(md) -> list:
+    if not isinstance(md, str) or not md.lstrip().startswith("---"):
+        return ["missing front matter block"]
+    start = md.find("---")
+    end = md.find("---", start + 3)
+    if end == -1:
+        return ["unterminated front matter"]
+    keys = parse_frontmatter(md)
+    body = md[end+3:]
+    errs = [f"front matter missing: {k}" for k in REQUIRED_FRONTMATTER - set(keys)]
+    if keys.get("source_type") not in SOURCE_TYPES:
+        errs.append("front matter bad source_type")
+    if keys.get("evidence_level") not in {"confirmed","short"}:
+        errs.append("front matter bad evidence_level")
+    if not body.strip():
+        errs.append("empty body")
+    return errs

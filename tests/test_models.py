@@ -47,3 +47,33 @@ def test_membership_and_uniqueness():
     # duplicate event_key
     dup = _obj([dict(BASE_ITEM), dict(BASE_ITEM, url="https://x/y")])
     assert any("duplicate" in e for e in validate_against_candidates(dup, cand))
+
+from nbs.models import validate_blog_output, parse_frontmatter
+_GOOD = """---
+title: 테스트 제목
+date: 2026-07-01
+tags: [ai]
+source_url: https://x.test/a
+source_lang: en
+source_type: article
+evidence_level: confirmed
+event_key: x-launch
+---
+본문 내용이 여기 있다. 충분히 길다.
+"""
+def test_parse_frontmatter_reads_keys():
+    fm = parse_frontmatter(_GOOD)
+    assert fm["event_key"] == "x-launch" and fm["source_url"] == "https://x.test/a"
+def test_valid_blog_passes():
+    assert validate_blog_output(_GOOD) == []
+def test_missing_frontmatter_key():
+    bad = _GOOD.replace("event_key: x-launch\n", "")
+    assert any("event_key" in e for e in validate_blog_output(bad))
+def test_empty_body_flagged():
+    head = _GOOD[:_GOOD.rindex("---")+3]
+    assert any("body" in e for e in validate_blog_output(head + "\n   \n"))
+def test_bad_evidence_level():
+    bad = _GOOD.replace("evidence_level: confirmed", "evidence_level: unverified")
+    assert any("evidence_level" in e for e in validate_blog_output(bad))
+def test_no_frontmatter_at_all():
+    assert validate_blog_output("just text") == ["missing front matter block"]
