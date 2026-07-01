@@ -21,3 +21,25 @@ def test_news_index_only_ok_with_hook_and_category():
     assert "2026-07-01-a" in md          # links post slug
     assert "hook-a" in md                # per-item hook from rationale
     assert "뉴스/블로그" in md            # category header for article
+
+def _ok_with_md(k, body="이 도구로 요약을 자동화한다"):
+    r=_r(k)
+    r._md=f"---\ntitle: T-{k}\n---\n{body}\n"
+    return r
+
+def test_usecase_none_when_empty():
+    assert assemble.build_usecase([_r("a", status="failed")], "2026-07-01") is None
+
+def test_usecase_prompt_includes_titles_and_snippet():
+    p=assemble.build_usecase_prompt([_ok_with_md("a")], "2026-07-01")
+    assert "T-a" in p and "요약을 자동화" in p and "2026-07-01" in p
+
+def test_usecase_uses_injected_run_and_validates():
+    out=assemble.build_usecase([_ok_with_md("a")], "2026-07-01",
+                               run=lambda t, timeout=180: "---\ntitle: U\ndate: 2026-07-01\ntags: [usecase]\n---\nbody\n")
+    assert out.startswith("---")
+
+def test_usecase_rejects_missing_frontmatter():
+    import pytest
+    with pytest.raises(ValueError):
+        assemble.build_usecase([_ok_with_md("a")], "2026-07-01", run=lambda t, timeout=180: "no fm")
