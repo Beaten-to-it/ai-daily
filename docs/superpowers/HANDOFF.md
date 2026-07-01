@@ -1,6 +1,6 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-01 (P2b 완료). `/clear` 후 새 세션은 이 문서 + 스펙 + 다음 plan을 읽고 이어간다.
+> 마지막 갱신: 2026-07-01 (P2b **구현완료·미머지** — 최종리뷰+머지 대기). `/clear` 후 새 세션은 이 문서(특히 §2.5) + 스펙 + P2b plan을 읽고 이어간다.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
@@ -14,9 +14,26 @@
 |---|---|---|
 | P1 | Hugo(PaperMod) 사이트 골격 + GitHub Actions Pages 배포 | ✅ DONE (라이브, 샘플글) |
 | P2a | 수집(RSS+X+Reddit) → claude -p 내용 중복판정·선별 → `selection.json` | ✅ DONE (merged, 20 tests) |
-| P2b | 전문 fetch(grounding 게이트, insane-search 폴백) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | ✅ DONE (merged, 69 tests + REAL 22건 스모크) |
-| **P2c** | **원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append** | ⏭ **다음** |
+| P2b | 전문 fetch(grounding 게이트) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | 🟡 **구현완료·미머지** (branch `p2b-fetch-generate-assemble`, 70 tests green). 최종리뷰+머지 미완 — §2.5 |
+| P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | 대기 (P2b 머지 후) |
 | P3 | 자동화(스케줄러·preflight·catchup) + 이메일(idempotent) + 관측성/알림 + Reddit용 Chrome 기동 | 대기 |
+
+## 2.5 P2b 재개 상태 (미머지 — **여기부터 시작**)
+
+**브랜치:** `p2b-fetch-generate-assemble` (main 미머지). HEAD `100135a`. `python3 -m pytest -q` = **70 passed**.
+**plan:** `docs/superpowers/plans/2026-07-01-p2b-fetch-generate-assemble.md` (9-task TDD, advisor+Codex 2R 통과). 진행 ledger: `.superpowers/sdd/progress.md` (gitignore).
+
+**구현 완료 (9/9 task, 태스크별 리뷰 통과):** `nbs/fetch.py`(체인+classify_evidence), `nbs/generate.py`(claude -p `--tools ""`, delimiter sanitize, generate_all 병렬/timeout/retry/격리), `nbs/assemble.py`(news+floor+usecase), `nbs/stage.py`(→`runs/<date>/staging/`+`generation.json`, P2b→P2c 계약). `prompts/blog.md`,`prompts/usecase.md`. select.py도 `--tools ""` 하드닝(§10).
+
+**실 E2E 증거:** 1차 실행(Claude Code env)=22 fetch + **진짜 한글 블로그 8편** + news 조립 성공(파이프라인 실증). 구현중 실버그 4개 잡아 고침(commit 0adff5e 캡션dedup, 3c98a46 dup-frontmatter+`--tools ""`발견[`--allowedTools ""`는 툴 안막힘!], d77e02c 프롬프트 template-injection+select하딩, 100135a usecase실패격리).
+
+**⚠️ 머지 전 남은 것 (순서대로):**
+1. **[BLOCK] `build_usecase`에 `_strip_fences` 없음** (advisor 최종리뷰 지적). `render_blog`는 `_strip_fences(run_claude_notools(...))` 하는데 `build_usecase`는 `raw.strip()` 후 `startswith("---")`만 체크 → LLM이 ```` ```markdown ```` 펜스/서두 붙이면 usecase 매번 실패(§5격리로 크래시는 안 나지만 usecase 산출물 = 조용히 안 나옴). 수정: `build_usecase`도 `_strip_fences` 재사용 + 펜스 씌운 usecase 출력 테스트 추가. **머지 게이트.**
+2. **깨끗한 생성 스모크 (Claude Code env에서!)**: `claude -p`는 **`codex exec` 밑에서 실패**한다(2026-07-01 Codex 스모크: 4/4 `claude -p failed:` — 인증/nesting). 그러니 생성 스모크는 Claude Code 환경에서 돌린다. 빠른 확인용 4항목 스모크셋: `runs/2026-07-02/selection.json`(article 4개, 실URL). `python3 -m nbs.stage --date 2026-07-02` → generation.json status=ok + posts≥1 + usecase 파일 생성 확인. (스모크는 [[smoke-tests-via-codex]]에 예외 기록됨: claude -p 호출 스모크는 Codex 불가.)
+3. **최종 whole-branch 적대리뷰 마저**: advisor ✅완료(위 #1 지적). **Codex 최종리뷰 미완**, opus whole-branch reviewer 미완. 패키지: `.superpowers/sdd/review-a99e961..100135a.diff`. deferred Minor 트리아지: parse_frontmatter unanchored `---`(fail-safe), fetched.text size cap 없음, `_strip_fences` greedy, stage rerun시 `fetched/` 미삭제.
+4. **머지**: finishing-a-development-branch → main 머지 + push. HANDOFF/memory 갱신(P2b DONE, 다음=P2c).
+
+**커버리지 주의:** 실스모크는 article-only. paper/sns/video fetch는 단위테스트만(reddit=Chrome off). PR/handoff에 명시.
 
 ## 3. 문서 위치
 - 스펙(SSOT): `docs/superpowers/specs/2026-07-01-nbs-news-blog-design.md`
