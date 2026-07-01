@@ -1,6 +1,6 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-01. `/clear` 후 새 세션은 이 문서 + 스펙 + 다음 plan을 읽고 이어간다.
+> 마지막 갱신: 2026-07-01 (P2b 완료). `/clear` 후 새 세션은 이 문서 + 스펙 + 다음 plan을 읽고 이어간다.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
@@ -14,8 +14,8 @@
 |---|---|---|
 | P1 | Hugo(PaperMod) 사이트 골격 + GitHub Actions Pages 배포 | ✅ DONE (라이브, 샘플글) |
 | P2a | 수집(RSS+X+Reddit) → claude -p 내용 중복판정·선별 → `selection.json` | ✅ DONE (merged, 20 tests) |
-| **P2b** | **전문 fetch(grounding 게이트, insane-search 폴백) + 항목당 한글 Blog 생성 + News/UseCase 조립** | ⏭ **다음** |
-| P2c | 원자적 스테이징·완결성 검사·로컬 발행(빌드+커밋) | 대기 |
+| P2b | 전문 fetch(grounding 게이트, insane-search 폴백) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | ✅ DONE (merged, 69 tests + REAL 22건 스모크) |
+| **P2c** | **원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append** | ⏭ **다음** |
 | P3 | 자동화(스케줄러·preflight·catchup) + 이메일(idempotent) + 관측성/알림 + Reddit용 Chrome 기동 | 대기 |
 
 ## 3. 문서 위치
@@ -42,26 +42,42 @@
 - `yt-dlp` 설치됨(video/insane-search 백엔드). `agent-reach`(라우터), `insane-search`(스킬, **P2b fetch 폴백**: Jina/curl_cffi/Playwright).
 - claude -p: **stdin으로 프롬프트 전달**(`subprocess.run(["claude","-p"], input=text)`) — argv 길이 회피. 검증됨.
 
-## 6. 데이터 계약 (P2b가 그대로 소비)
+## 6. 데이터 계약
+
+### 6a. P2a → P2b (`selection.json`)
 - `runs/<date>/selection.json` 루트: `{date, items[], selected_count, skipped_count, generated_with}` (gitignore 스크래치).
 - SelectionItem: `{event_key, title(한글), url(후보에 존재·검증됨), source, source_type, evidence_type, dedup(new|followup|skip), prior_post_path, rank, rationale}`. source/source_type은 **LLM 편집 분류**(URL로 grounding, 의도적으로 candidate에서 안 덮어씀).
-- ledger `data/published.csv` 헤더: `canonical_key,event_key,date,title,url,source,post_path,summary,entities,tags,confidence` (커밋 대상, 아직 비어있음 — P2b/c가 발행 후 append하며 post_path 채움).
 - 코드: `nbs/models.py`(Candidate/SelectionItem/canonicalize_url/validate_*), `nbs/collect.py`, `nbs/select.py`, `nbs/ledger.py`, `nbs/sources.py`, `prompts/select.md`.
 
-## 7. 재개 실행 절차 (P2b 시작)
-1. `cd /home/beaten/project/NBs && export PATH="$HOME/.local/bin:$PATH"`
-2. `python3 -m pytest -q` → 20 passed 확인(그린 베이스라인).
-3. 스펙 §2~§12 + 이 문서 §4~§6 읽기.
-4. **P2b writing-plans** → 각 단계 **advisor + Codex 적대 리뷰**(2R 캡, 글로벌 룰=게이트) → 사용자 "구현해" → subagent-driven 실행(브랜치 `p2b-...` → 리뷰 → 머지).
+### 6b. P2b → P2c (staging, 아직 `content/` 아님) — **P2c가 소비할 계약**
+- P2b(`nbs/stage.py`)는 `selection.json`을 읽어 **실제 fetch → claude -p 생성 → 스테이징**까지만 하고, **`content/`에는 아무것도 쓰지 않는다.** 승격은 P2c 책임.
+- 산출물 위치(둘 다 `runs/<date>/` 아래, gitignore 스크래치 — 커밋 대상 아님):
+  - `runs/<date>/staging/posts/<slug>.md` — 상태 `ok`인 항목만. front matter: title/date/tags/source_url/source_lang/source_type/evidence_level/event_key.
+  - `runs/<date>/staging/news/<date>.md` — News 인덱스(카테고리별 그룹, 항목당 훅). **floor 통과 시에만** 생성.
+  - `runs/<date>/staging/usecase/<date>.md` — AI UseCase(일반 사용자 톤). floor 통과 + publishable 존재 시에만 생성.
+  - `runs/<date>/generation.json` — `{date, status, results[], published_count, floor_failed}`. `results[]`는 `GenerationResult.to_dict()`: `{event_key,title,url,source,source_type,evidence_level,status(ok|failed|excluded),post_path,slug,rank,rationale,error}`.
+- **floor**: `nbs/assemble.py FLOOR_N=3` — publishable(status=="ok") 개수가 3 미만이면 `floor_failed=true`이고 news/usecase 파일은 **생성되지 않음**(posts는 ok인 것만 그대로 스테이징됨). P2c는 `floor_failed`를 보고 그날 전체를 보류할지 posts만 갈지 정책 결정 필요(스펙 §5).
+- P2c가 해야 할 일(스펙 §2 파이프라인의 나머지): staging → `content/posts/`·`content/news/`·`content/usecase/` **원자적 승격** + **완결성 검사**(개수·front matter 일치 재검증) + Hugo 빌드 + `git commit`(+push) + `data/published.csv` **ledger append**(post_path 채움, canonical_key/event_key/date/title/url/source/summary/entities/tags/confidence).
+- 코드: `nbs/stage.py`(orchestration), `nbs/fetch.py`(evidence gate: confirmed/short/exclude), `nbs/generate.py`(claude -p 격리 호출 + 스키마 검증), `nbs/assemble.py`(floor/news/usecase), `nbs/models.py`(GenerationResult/FetchResult), `prompts/blog.md`, `prompts/usecase.md`.
+- ledger `data/published.csv` 헤더: `canonical_key,event_key,date,title,url,source,post_path,summary,entities,tags,confidence` (커밋 대상, 아직 비어있음 — **P2c**가 발행 후 append).
 
-### P2b 설계 시드 (미확정, plan에서 확정)
-- fetch: article=WebFetch→insane-search(페이월/차단/JS 폴백)→실패 시 `evidence:short` 또는 제외. paper=arXiv abstract. sns=twitter/opencli 스레드. video=yt-dlp 자막.
-- 생성: `selection.json` 항목마다 **claude -p 1회**(격리) → 원문 근거 한글 Blog md(front matter: title/date/tags/source_url/source_lang/source_type/evidence_level/event_key) → `content/posts/`.
-- 실행 한도: 병렬 캡·항목당 timeout·retry·실패격리. **최소발행 floor**(그날 confirmed+short < N이면 전체 보류+알림).
-- 프롬프트 인젝션 방어: 원문=신뢰못할 데이터(구분자), 스키마 검증, 시크릿 접근 분리, 원문 근거로 도구호출 금지.
-- **무출력 날 처리**: select/생성이 0건이면 그날 발행 skip(P2c/P3가 처리).
+## 7. 재개 실행 절차 (P2c 시작)
+1. `cd /home/beaten/project/NBs && export PATH="$HOME/.local/bin:$PATH"`
+2. `python3 -m pytest -q` → 69 passed 확인(그린 베이스라인).
+3. 스펙 §2, §5, §12(완결성/발행) + 이 문서 §4~§6 읽기.
+4. **P2c writing-plans** → 각 단계 **advisor + Codex 적대 리뷰**(2R 캡, 글로벌 룰=게이트) → 사용자 "구현해" → subagent-driven 실행(브랜치 `p2c-...` → 리뷰 → 머지).
+5. `scripts/p2a_smoke.sh <date> && scripts/p2b_smoke.sh <date>`로 `runs/<date>/staging/` + `generation.json` 재생성 후, P2c는 그걸 입력으로 승격 로직을 짠다.
+
+### P2c 설계 시드 (미확정, plan에서 확정)
+- 승격: `staging/posts|news|usecase/*` → `content/posts|news|usecase/*` 원자적 복사(임시 디렉터리 + rename, 부분 실패 방지).
+- 완결성 게이트: 승격 직전 `generation.json.results`의 `ok` 개수 == 승격될 post 파일 개수 재검증(재수정·경합 방지, P2b가 이미 하는 recount-before-membership 패턴 재사용).
+- `floor_failed=true`일 때 정책: posts만 승격하고 news/usecase는 skip? 그날 전체 보류? — 스펙 §5 "부분 실패시 발행 가능한 것만" 원칙과 상충 없는지 확인 필요(미확정).
+- 커밋 메시지 포맷·ledger append 시점(빌드 성공 후 vs 승격 직후)은 plan에서 확정.
 
 ## 8. 알려진 함정 / 미해결
 - `select`는 LLM 스키마/멤버십 실패 시 그날 **abort(무출력)** — 다운스트림이 감내해야(재시도는 P3).
-- Reddit은 Chrome 꺼지면 가드 스킵(현재 그러함). X 원문 트윗은 저신호 많아 LLM이 자주 필터(정상).
+- Reddit은 Chrome 꺼지면 가드 스킵(현재 그러함; task-9 REAL 스모크는 22건 전부 `source_type=article`이라 reddit/sns 경로는 이번엔 미노출 — 다음에 sns 항목 섞인 날 재확인 필요). X 원문 트윗은 저신호 많아 LLM이 자주 필터(정상).
 - 워크플로 룰: 산출물마다 **advisor + Codex 각 단계 리뷰**(글로벌 CLAUDE.md 게이트). subagent-driven, 브랜치→머지, 커밋 태스크별.
+- **경험적으로 고정된 사실 (재발 방지, 다음 세션이 재검증할 필요 없음):**
+  - `claude -p` **도구 완전 차단 플래그는 `--tools ""`** (브리프 원안이던 `--allowedTools ""`는 **차단 안 됨** — Read가 `/etc/hostname`에 대해 permission_denials 없이 실행됨. `--tools ""`는 세션 init에서 `tools: []`, `tool_use` 이벤트 0건까지 확인됨). 코드: `nbs/generate.py:28-34`.
+  - `yt-dlp`는 **ffmpeg 미설치 환경**에서 `--convert-subs srt`가 no-op이라 **`.vtt`를 그대로 남긴다**(`.srt` glob이 비면 `.vtt`로 폴백 필요). 코드: `nbs/fetch.py:150-169`.
