@@ -29,3 +29,15 @@ def test_cap_per_source():
     from collections import Counter
     c=Counter(x.source for x in collect.cap_per_source(cands, n=25))
     assert c["arXiv"]==25 and c["GeekNews"]==5
+
+def test_cap_per_source_mixed_published_at():
+    # Fix 1: epoch int / None / ISO str mixed → must not raise TypeError
+    from nbs.models import Candidate
+    mk=lambda pub: Candidate("src","article","t","http://x/1","http://x/1",pub,"s","1")
+    mixed=[mk(1751270400), mk(None), mk("2026-06-30T12:00:00+00:00")]
+    result=collect.cap_per_source(mixed, n=25)
+    assert len(result)==3  # all returned (well under cap)
+
+def test_within_window_same_day_afternoon():
+    # Fix 4: same-day afternoon (KST 15:00 = UTC 06:00) must pass on that run date
+    assert collect.within_window("2026-07-01T15:00:00+09:00","2026-07-01")

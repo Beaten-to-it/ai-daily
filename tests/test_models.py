@@ -19,6 +19,24 @@ def test_followup_requires_prior_path():
     errs = validate_selection(_obj([it]))
     assert any("prior_post_path" in e for e in errs)
 
+def test_canonicalize_url_query_order():
+    # Fix 3: reordered query params canonicalize equal
+    from nbs.models import canonicalize_url
+    assert canonicalize_url("https://x.com/p?b=2&a=1") == canonicalize_url("https://x.com/p?a=1&b=2")
+
+def test_validate_selection_items_not_list():
+    # Fix 2: items as dict → error list, no raise
+    bad = {"date":"d","items":{},"selected_count":0,"skipped_count":0,"generated_with":"x"}
+    errs = validate_selection(bad)
+    assert errs and not any(isinstance(e, Exception) for e in errs)
+    assert any("items not a list" in e for e in errs)
+
+def test_validate_selection_item_not_dict():
+    # Fix 2: item is not a dict → error, no raise
+    bad = {"date":"d","items":[123],"selected_count":1,"skipped_count":0,"generated_with":"x"}
+    errs = validate_selection(bad)
+    assert errs and any("not a dict" in e for e in errs)
+
 def test_membership_and_uniqueness():
     it = dict(BASE_ITEM, url="https://x/y")
     cand = {"https://x/y"}

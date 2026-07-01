@@ -13,7 +13,7 @@ def canonicalize_url(u: str) -> str:
     except Exception: return u.strip()
     q = [(k,v) for k,v in parse_qsl(s.query) if not k.lower().startswith(_DROP_PARAMS)]
     path = s.path.rstrip("/") or "/"
-    return urlunsplit((s.scheme.lower(), s.netloc.lower(), path, urlencode(q), ""))
+    return urlunsplit((s.scheme.lower(), s.netloc.lower(), path, urlencode(sorted(q)), ""))
 
 @dataclass
 class Candidate:
@@ -34,7 +34,11 @@ def validate_selection(obj) -> list:
     if not isinstance(obj, dict): return ["root not a dict"]
     for k in ("date","items","selected_count","skipped_count","generated_with"):
         if k not in obj: errs.append(f"missing root key: {k}")
+    if not isinstance(obj.get("items"), list):
+        errs.append("items not a list"); return errs
     for i, it in enumerate(obj.get("items", [])):
+        if not isinstance(it, dict):
+            errs.append(f"item[{i}] not a dict"); continue
         miss = _ITEM_KEYS - set(it)
         if miss: errs.append(f"item[{i}] missing: {sorted(miss)}")
         if it.get("source_type") not in SOURCE_TYPES: errs.append(f"item[{i}] bad source_type")

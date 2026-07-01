@@ -23,7 +23,7 @@ def within_window(pub_iso, today, hours=30):
     except ValueError: return True
     if pub.tzinfo is None: pub = pub.replace(tzinfo=timezone.utc)   # naive=UTC (KST 라벨 금지)
     end = datetime.fromisoformat(today+"T00:00:00").replace(tzinfo=KST).astimezone(timezone.utc)
-    return (end - pub) <= timedelta(hours=hours) and pub <= end + timedelta(hours=6)
+    return (end - pub) <= timedelta(hours=hours) and pub <= end + timedelta(hours=24)
 
 def dedup_by_url(cands):
     seen, out = set(), []
@@ -91,7 +91,7 @@ def cap_per_source(cands, n=25):
     for c in cands: buckets[c.source].append(c)
     out=[]
     for items in buckets.values():
-        items.sort(key=lambda c: (c.published_at or ""), reverse=True)   # 최신 우선; None→"" 후순위
+        items.sort(key=lambda c: c.published_at if isinstance(c.published_at, str) else "", reverse=True)  # 최신 우선; non-str(epoch int/None)→"" 후순위
         out += items[:n]
     return out
 

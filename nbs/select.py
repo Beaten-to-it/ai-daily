@@ -38,10 +38,12 @@ def select(date):
     obj=parse_selection(run_claude(build_prompt_input(cands, digest, date)))
     errs=validate_selection(obj)
     if errs: raise ValueError("selection schema invalid: "+"; ".join(errs[:8]))
+    # recount drops dedup:"skip" rows before membership check; skipped_count counts only explicit dedup:"skip" items
+    recount(obj)
     cand_urls={canonicalize_url(c["url"]) for c in cands}
+    # source/source_type are the LLM's editorial classification (e.g. arXiv-via-HN => paper); grounded by URL membership, intentionally not overwritten from candidate.
     errs=validate_against_candidates(obj, cand_urls)
     if errs: raise ValueError("selection membership/uniqueness invalid: "+"; ".join(errs[:8]))
-    recount(obj)
     (run_dir(date)/"selection.json").write_text(json.dumps(obj,ensure_ascii=False,indent=2),encoding="utf-8")
     return obj
 
