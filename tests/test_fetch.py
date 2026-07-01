@@ -26,3 +26,37 @@ def test_video_short_caption_is_short():
 def test_empty_excluded_any_type():
     assert fetch.classify_evidence("video", "") == "exclude"
     assert fetch.classify_evidence("sns", "   ") == "exclude"
+
+def test_article_falls_back_to_jina_when_http_thin(monkeypatch):
+    monkeypatch.setattr(fetch, "_http_get", lambda u, timeout=20: ("<div id=root></div>", True))
+    monkeypatch.setattr(fetch, "_jina", lambda u, timeout=30: "F"*1500)
+    text, via, ok = fetch.fetch_article("https://x.test/a")
+    assert ok and via == "jina" and len(text) >= 1500
+
+def test_fetch_item_routes_by_source_type(monkeypatch):
+    monkeypatch.setattr(fetch, "fetch_paper", lambda u: ("abstract "*80, "arxiv", True))
+    r = fetch.fetch_item({"event_key":"k","url":"https://arxiv.org/abs/1","source_type":"paper"})
+    assert r.evidence_level == "confirmed" and r.source_type == "paper" and r.via == "arxiv"
+
+def test_fetch_item_excludes_on_total_failure(monkeypatch):
+    monkeypatch.setattr(fetch, "fetch_article", lambda u: ("", "none", False))
+    r = fetch.fetch_item({"event_key":"k","url":"https://x.test","source_type":"article"})
+    assert r.evidence_level == "exclude" and r.fetch_ok is False
+
+def test_extract_tweets_from_envelope():
+    raw = '{"ok":true,"data":[{"text":"We just shipped v2."},{"text":"Faster, cheaper."}]}'
+    out = fetch._extract_tweets(raw)
+    assert "We just shipped v2." in out and "Faster, cheaper." in out and "{" not in out
+
+def test_fetch_sns_classifies_extracted_text_not_json(monkeypatch):
+    env = '{"ok":true,"data":[{"text":"tiny tweet"}]}'
+    class R: returncode=0; stdout=env; stderr=""
+    monkeypatch.setattr(fetch.subprocess, "run", lambda *a, **k: R())
+    text, via, ok = fetch.fetch_sns({"url":"https://x.com/a/status/1"})
+    r = fetch.fetch_item({"event_key":"k","url":"https://x.com/a/status/1","source_type":"sns"})
+    assert "tiny tweet" in text and "{" not in text and r.evidence_level == "short"
+
+def test_strip_srt_removes_timestamps_and_indices():
+    srt = "1\n00:00:01,000 --> 00:00:03,000\nHello world\n\n2\n00:00:03,000 --> 00:00:05,000\nSecond line\n"
+    out = fetch._strip_srt(srt)
+    assert out == "Hello world\nSecond line"
