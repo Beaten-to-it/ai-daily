@@ -3,6 +3,8 @@ import re
 MIN_ARTICLE_CHARS = 1200   # tunable — below this an article body isn't "full text"
 MIN_SHELL_CHARS = 200      # below this an HTML page is an empty JS shell / dead / stub
 MIN_ABSTRACT_CHARS = 400   # arXiv abstract floor for confirmed
+MAX_EVIDENCE_CHARS = 40000 # cap fed to claude -p (~10K tokens); long tail dropped
+                           # ponytail: raise if detailed rewrites lose the article's end
 PAYWALL_MARKERS = (
     "subscribe to continue", "subscribe to read", "sign in to read",
     "for subscribers", "create a free account", "이 기사를 읽으려면",
@@ -10,10 +12,17 @@ PAYWALL_MARKERS = (
 )
 
 def _visible_len(text: str) -> int:
-    # strip tags + collapse whitespace so an HTML shell scores ~0
+    # strip tags + collapse whitespace so an HTML shell scores ~0 (gate only)
     t = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.I)
     t = re.sub(r"<[^>]+>", " ", t)
     return len(re.sub(r"\s+", " ", t).strip())
+
+def _visible_text(html: str) -> str:
+    # return-path extraction: drop script+style bodies + all tags so the evidence
+    # fed to claude -p is readable text, not raw HTML/JSON/CSS (else prompt blows up)
+    t = re.sub(r"<(script|style)[\s\S]*?</\1>", " ", html, flags=re.I)
+    t = re.sub(r"<[^>]+>", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
 
 def classify_evidence(source_type, text, *, paywall_marker=False, fetch_ok=True):
     if not fetch_ok or not text or not text.strip():
@@ -67,14 +76,14 @@ def _has_paywall(text):
 def fetch_article(url):
     text, ok = _http_get(url)
     if ok and _visible_len(text) >= MIN_ARTICLE_CHARS and not _has_paywall(text):
-        return text, "http", True
-    j = _jina(url)
+        return _visible_text(text)[:MAX_EVIDENCE_CHARS], "http", True
+    j = _jina(url)                                   # jina returns clean markdown, keep as-is
     if _visible_len(j) >= MIN_SHELL_CHARS:
-        return j, "jina", True
+        return j[:MAX_EVIDENCE_CHARS], "jina", True
     c = _curl_impersonate(url)
     if _visible_len(c) >= MIN_SHELL_CHARS:
-        return c, "curl_cffi", True
-    return (text or j or c), "http", ok
+        return _visible_text(c)[:MAX_EVIDENCE_CHARS], "curl_cffi", True
+    return (_visible_text(text) or j or _visible_text(c))[:MAX_EVIDENCE_CHARS], "http", ok
 
 def fetch_paper(url):
     # arXiv abs page via Jina reader (abstract lives in the page)

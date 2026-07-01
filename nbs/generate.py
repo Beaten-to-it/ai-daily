@@ -5,6 +5,8 @@ from .models import validate_blog_output, parse_frontmatter, GenerationResult
 
 BLOG_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "blog.md"
 _DELIMS = ("<<<SOURCE_BEGIN>>>", "<<<SOURCE_END>>>")
+GEN_TIMEOUT = 300   # detailed Korean blog gen measured ~216s solo; 180s under-cut it.
+                    # ponytail: a failing item burns up to 2x this (retries=1) — raise with care
 
 def _sanitize_source(text):
     # neutralize delimiter tokens so untrusted source can't escape the data fence (§10)
@@ -25,7 +27,7 @@ def build_blog_prompt(item, fetched, date):
                   .replace("<URL>", item.get("url","")))
     return filled.replace("<<SOURCE>>", _sanitize_source(fetched.text))
 
-def run_claude_notools(text, timeout=180):
+def run_claude_notools(text, timeout=GEN_TIMEOUT):
     # --tools "" : empty tool set = NO tool access, incl. MCP (§10 boundary).
     # Empirically verified (task-4-report.md, Step 0): --allowedTools "" (brief's original
     # choice) does NOT block tools -- it let Read execute against /etc/hostname with
@@ -56,7 +58,7 @@ def _duplicate_frontmatter_keys(md):
         (dupes.append(k) if k in seen else seen.add(k))
     return dupes
 
-def render_blog(item, fetched, date, timeout=180):
+def render_blog(item, fetched, date, timeout=GEN_TIMEOUT):
     md = _strip_fences(run_claude_notools(build_blog_prompt(item, fetched, date), timeout=timeout))
     errs = validate_blog_output(md)
     if errs:
@@ -87,11 +89,14 @@ def _gen_one(item, fetched, date, render, timeout, retries):
             r = GenerationResult(status="ok", post_path=f"posts/{slug}.md", **base)
             r._md = md            # carried for staging; not serialized by to_dict()
             return r
+        except subprocess.TimeoutExpired:
+            last = f"timed out after {timeout}s"
+            break                 # retrying a timeout just burns another full timeout
         except Exception as e:
             last = str(e)[:200]
     return GenerationResult(status="failed", post_path=None, error=last, **base)
 
-def generate_all(items, fetched_map, date, *, max_workers=4, timeout=180, retries=1, render=None):
+def generate_all(items, fetched_map, date, *, max_workers=4, timeout=GEN_TIMEOUT, retries=1, render=None):
     render = render or render_blog
     todo = [it for it in items if it.get("event_key") in fetched_map]
     out = []

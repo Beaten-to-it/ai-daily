@@ -97,6 +97,15 @@ def test_failure_is_isolated_and_retried():
     assert calls["n"]==4  # 2 items * (1 try + 1 retry)
     assert all(r.status=="failed" for r in res)
 
+def test_timeout_is_not_retried():
+    import subprocess
+    calls={"n":0}
+    def slow(item, fetched, date, timeout=180):
+        calls["n"]+=1; raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout)
+    items=[{"event_key":"a","title":"A","url":"u","source":"S","source_type":"article","rank":1,"rationale":"r"}]
+    res=generate.generate_all(items, {"a":_fr("confirmed")}, "2026-07-01", render=slow, retries=1)
+    assert calls["n"]==1 and res[0].status=="failed" and "timed out" in res[0].error
+
 def test_timeout_is_passed_to_render():
     seen={}
     def cap(item, fetched, date, timeout=180):

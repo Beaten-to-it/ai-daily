@@ -27,6 +27,22 @@ def test_empty_excluded_any_type():
     assert fetch.classify_evidence("video", "") == "exclude"
     assert fetch.classify_evidence("sns", "   ") == "exclude"
 
+def test_article_returns_visible_text_not_raw_html(monkeypatch):
+    html = ("<html><head><style>.x{color:red}</style>"
+            "<script>var junk={a:1,b:2}</script></head>"
+            "<body><h1>Title</h1><p>" + "real body text " * 120 + "</p></body></html>")
+    monkeypatch.setattr(fetch, "_http_get", lambda u, timeout=20: (html, True))
+    text, via, ok = fetch.fetch_article("https://x.test/a")
+    assert via == "http" and ok
+    assert "<" not in text and "var junk" not in text and "color:red" not in text
+    assert "real body text" in text
+
+def test_article_caps_evidence_size(monkeypatch):
+    big = "<p>" + ("word " * fetch.MAX_EVIDENCE_CHARS) + "</p>"   # visible >> cap
+    monkeypatch.setattr(fetch, "_http_get", lambda u, timeout=20: (big, True))
+    text, via, ok = fetch.fetch_article("https://x.test/a")
+    assert len(text) == fetch.MAX_EVIDENCE_CHARS
+
 def test_article_falls_back_to_jina_when_http_thin(monkeypatch):
     monkeypatch.setattr(fetch, "_http_get", lambda u, timeout=20: ("<div id=root></div>", True))
     monkeypatch.setattr(fetch, "_jina", lambda u, timeout=30: "F"*1500)
