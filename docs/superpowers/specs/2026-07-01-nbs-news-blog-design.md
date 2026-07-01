@@ -151,12 +151,15 @@
 
 ## 15. 미결 / 구현 시 확정
 
+**확정 (P2b, 2026-07-01):**
+- 최소 발행 floor **N=3** (대량장애 감지용, 상한 아님·튜너블). 항목당 timeout **180s**, 병렬 **4**, retry **1회**. claude -p는 OAuth(호출별 비용0)라 예산이 아닌 wall-clock·레이트가 한도.
+- AI UseCase 산출 = **별도 claude -p 1회**, 그날 생성된 Blog 요약 기반 **하루 1~3편** 큐레이션(추가 fetch 없음, 일반 사용자 톤).
+- Hugo 테마 = PaperMod (P1). repo = ai-daily (P1).
+
+**미결 (후속 단계):**
 - News 카테고리 라벨 최종안.
 - 이메일 추가 수신자.
-- Hugo 테마 선정.
-- 새 repo 이름.
-- 최소 발행 기준 N, 항목당 timeout·일일 예산 구체값.
-- 인증 저장 위치/방식, systemd timer 가용 여부 확인.
+- 인증 저장 위치/방식, systemd timer 가용 여부 확인 (P3).
 
 ---
 
