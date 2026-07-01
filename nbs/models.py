@@ -59,3 +59,20 @@ def validate_against_candidates(obj, cand_canon_urls: set) -> list:
         if cu in seen_urls: errs.append(f"item[{i}] duplicate url")
         seen_keys.add(it.get("event_key")); seen_urls.add(cu)
     return errs
+
+EVIDENCE_LEVELS = {"confirmed", "short", "exclude"}
+
+@dataclass
+class FetchResult:
+    event_key: str; url: str; source_type: str
+    text: str; evidence_level: str; via: str; fetch_ok: bool
+    def to_dict(self): return asdict(self)
+
+@dataclass
+class GenerationResult:
+    event_key: str; title: str; url: str; source: str; source_type: str
+    evidence_level: str; status: str            # ok | failed | excluded
+    post_path: Optional[str]; slug: str; rank: int
+    rationale: str = ""
+    error: Optional[str] = None
+    def to_dict(self): return asdict(self)
