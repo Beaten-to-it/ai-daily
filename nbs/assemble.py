@@ -47,7 +47,8 @@ def build_usecase(results, date, *, run=None):
         return None
     if run is None:
         from .generate import run_claude_notools as run
-    raw = run(build_usecase_prompt(results, date)).strip()
-    if not raw.startswith("---"):
+    from .generate import _strip_fences
+    md = _strip_fences(run(build_usecase_prompt(results, date)))  # same fence-strip as render_blog
+    if not md.startswith("---"):
         raise ValueError("usecase output missing front matter")
-    return raw + "\n"
+    return md

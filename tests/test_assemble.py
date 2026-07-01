@@ -43,3 +43,8 @@ def test_usecase_rejects_missing_frontmatter():
     import pytest
     with pytest.raises(ValueError):
         assemble.build_usecase([_ok_with_md("a")], "2026-07-01", run=lambda t, timeout=180: "no fm")
+
+def test_usecase_strips_code_fences():
+    fenced="```markdown\n---\ntitle: U\ndate: 2026-07-01\ntags: [usecase]\n---\nbody\n```\n"
+    out=assemble.build_usecase([_ok_with_md("a")], "2026-07-01", run=lambda t, timeout=180: fenced)
+    assert out.startswith("---") and "```" not in out
