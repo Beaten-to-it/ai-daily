@@ -37,10 +37,11 @@ def fetch_rss(feed, timeout=20):
     r.raise_for_status(); return parse_rss(r.content, feed)
 
 def parse_twitter_json(stdout, query):
-    try: data = json.loads(stdout or "[]")
+    try: obj = json.loads(stdout or "[]")
     except json.JSONDecodeError: return []
+    items = obj.get("data", []) if isinstance(obj, dict) else obj   # twitter --json은 {ok,data} 봉투; -c는 배열
     out=[]
-    for t in (data if isinstance(data, list) else []):
+    for t in (items if isinstance(items, list) else []):
         tid = str(t.get("id","")).strip()
         if not tid: continue
         text = t.get("text") or ""
@@ -83,7 +84,18 @@ def fetch_reddit(sub, limit=15):
     except Exception as e:
         print(f"[warn] Reddit r/{sub}: {e}"); return []
 
-def collect(date):
+def cap_per_source(cands, n=25):
+    # 소스별 최신 n개만 (arXiv 같은 firehose가 뉴스를 압도 + claude -p 프롬프트 과대 방지)
+    from collections import defaultdict
+    buckets = defaultdict(list)
+    for c in cands: buckets[c.source].append(c)
+    out=[]
+    for items in buckets.values():
+        items.sort(key=lambda c: (c.published_at or ""), reverse=True)   # 최신 우선; None→"" 후순위
+        out += items[:n]
+    return out
+
+def collect(date, cap=25):
     cands=[]
     for feed in sources.RSS_FEEDS:
         try: cands += [c for c in fetch_rss(feed) if within_window(c.published_at, date)]
@@ -92,7 +104,7 @@ def collect(date):
         cands += [c for c in fetch_x(q) if within_window(c.published_at, date)]
     for sub in sources.REDDIT_SUBS:
         cands += [c for c in fetch_reddit(sub) if within_window(c.published_at, date)]
-    return dedup_by_url(cands)
+    return dedup_by_url(cap_per_source(cands, cap))
 
 def write_candidates(date, cands):
     d=run_dir(date); d.mkdir(parents=True, exist_ok=True)

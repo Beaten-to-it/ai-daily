@@ -14,8 +14,18 @@ def test_within_window_utc():
     assert collect.within_window(None,"2026-07-01")
     assert collect.within_window(1751270400,"2026-07-01")  # epoch int(reddit) → no TypeError, 통과
 
-def test_parse_twitter_json_builds_url():
-    raw='[{"id":"123","author":"@a","text":"Claude news here"}]'
+def test_parse_twitter_json_envelope_and_url():
+    raw='{"ok":true,"data":[{"id":"123","text":"Claude news here"}]}'  # twitter --json 봉투(실제 포맷)
     cands = collect.parse_twitter_json(raw, "q")
     assert len(cands)==1 and cands[0].url=="https://x.com/i/status/123"
     assert cands[0].source_type=="sns" and cands[0].title.startswith("Claude")
+    assert len(collect.parse_twitter_json('[{"id":"9","text":"x"}]',"q"))==1  # bare array도 허용
+
+def test_cap_per_source():
+    from nbs.models import Candidate
+    mk=lambda src,i: Candidate(src,"paper",f"t{i}",f"http://x/{src}/{i}",f"http://x/{src}/{i}",
+                               f"2026-06-{10+i:02d}T00:00:00","s",str(i))
+    cands=[mk("arXiv",i) for i in range(30)]+[mk("GeekNews",i) for i in range(5)]
+    from collections import Counter
+    c=Counter(x.source for x in collect.cap_per_source(cands, n=25))
+    assert c["arXiv"]==25 and c["GeekNews"]==5
