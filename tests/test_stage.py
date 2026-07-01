@@ -64,3 +64,16 @@ def test_stage_skips_when_zero_items(rundir):
     date="2026-07-04"; _write_selection(rundir, date, 0)
     out=stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=lambda r,d:"x")
     assert out["status"]=="skip-empty"
+
+def test_stage_usecase_failure_is_isolated(rundir):
+    # §5: a usecase claude -p failure must NOT abort the run — manifest + posts + news survive
+    date="2026-07-06"; _write_selection(rundir, date, 3)
+    def boom(results, d): raise ValueError("usecase output missing front matter")
+    out=stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=boom)
+    d=rundir(date)
+    assert (d/"generation.json").exists()                       # manifest still written
+    assert out["published_count"]==3 and out["floor_failed"] is False
+    assert "front matter" in (out["usecase_error"] or "")       # failure recorded
+    assert (d/"staging"/"posts"/f"{date}-k0.md").exists()       # posts survive
+    assert (d/"staging"/"news"/f"{date}.md").exists()           # news survives
+    assert not (d/"staging"/"usecase"/f"{date}.md").exists()    # usecase skipped

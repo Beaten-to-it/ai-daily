@@ -19,7 +19,7 @@ def run(date, *, fetch=None, generate=None, usecase=None):
 
     if not items:
         payload = {"date": date, "status": "skip-empty", "results": [],
-                   "published_count": 0, "floor_failed": False}
+                   "published_count": 0, "floor_failed": False, "usecase_error": None}
         (d/"generation.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return payload
 
@@ -39,16 +39,22 @@ def run(date, *, fetch=None, generate=None, usecase=None):
             (staging/"posts"/f"{r.slug}.md").write_text(r._md, encoding="utf-8")
 
     floor_failed = not asm.floor_ok(results)
+    usecase_error = None
     if not floor_failed:
         (staging/"news"/f"{date}.md").write_text(asm.build_news_index(results, date), encoding="utf-8")
-        uc = usecase(results, date)
-        if uc:
-            (staging/"usecase"/f"{date}.md").write_text(uc, encoding="utf-8")
+        try:
+            # §5 isolation: a usecase claude -p failure (bad output/timeout) must not abort
+            # the whole run and lose the manifest + all successfully staged posts.
+            uc = usecase(results, date)
+            if uc:
+                (staging/"usecase"/f"{date}.md").write_text(uc, encoding="utf-8")
+        except Exception as e:
+            usecase_error = str(e)[:200]
 
     payload = {"date": date, "status": "ok",
                "results": [r.to_dict() for r in results],
                "published_count": len(asm.publishable(results)),
-               "floor_failed": floor_failed}
+               "floor_failed": floor_failed, "usecase_error": usecase_error}
     (d/"generation.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return payload
 
