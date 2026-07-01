@@ -76,3 +76,38 @@ def test_render_blog_raises_on_duplicate_frontmatter_key(monkeypatch):
     monkeypatch.setattr(generate, "run_claude_notools", lambda t, timeout=180: dup)
     with pytest.raises(ValueError):
         generate.render_blog(_item(), _fetched(), "2026-07-01")
+
+from nbs.models import FetchResult as FR
+def _fr(level): return FR("k","u","article","t"*50,level,"http",True)
+
+def test_excluded_items_skip_generation():
+    items=[{"event_key":"k","title":"T","url":"u","source":"S","source_type":"article","rank":1,"rationale":"r"}]
+    res=generate.generate_all(items, {"k":_fr("exclude")}, "2026-07-01",
+                              render=lambda *a,**k: (_ for _ in ()).throw(AssertionError("should not call")))
+    assert res[0].status=="excluded" and res[0].post_path is None
+
+def test_failure_is_isolated_and_retried():
+    calls={"n":0}
+    def flaky(item, fetched, date, timeout=180):
+        calls["n"]+=1; raise ValueError("boom")
+    items=[{"event_key":"a","title":"A","url":"u","source":"S","source_type":"article","rank":1,"rationale":"r"},
+           {"event_key":"b","title":"B","url":"u","source":"S","source_type":"article","rank":2,"rationale":"r"}]
+    fm={"a":_fr("confirmed"),"b":_fr("confirmed")}
+    res=generate.generate_all(items, fm, "2026-07-01", render=flaky, retries=1)
+    assert calls["n"]==4  # 2 items * (1 try + 1 retry)
+    assert all(r.status=="failed" for r in res)
+
+def test_timeout_is_passed_to_render():
+    seen={}
+    def cap(item, fetched, date, timeout=180):
+        seen["t"]=timeout; return "---\ntitle: T\ndate: d\ntags: [x]\nsource_url: u\nsource_lang: en\nsource_type: article\nevidence_level: confirmed\nevent_key: a\n---\nbody\n"
+    items=[{"event_key":"a","title":"A","url":"u","source":"S","source_type":"article","rank":1,"rationale":"r"}]
+    generate.generate_all(items, {"a":_fr("confirmed")}, "2026-07-01", render=cap, timeout=7)
+    assert seen["t"]==7
+
+def test_success_sets_post_path_slug_and_md():
+    ok=lambda item,f,d,timeout=180: "---\nok\n---\nbody\n"
+    items=[{"event_key":"a","title":"A","url":"u","source":"S","source_type":"article","rank":1,"rationale":"r"}]
+    res=generate.generate_all(items, {"a":_fr("confirmed")}, "2026-07-01", render=ok)
+    assert res[0].status=="ok" and res[0].slug=="2026-07-01-a"
+    assert res[0].post_path=="posts/2026-07-01-a.md" and res[0]._md.startswith("---")

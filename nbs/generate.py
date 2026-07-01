@@ -1,6 +1,7 @@
 import subprocess, re
 from pathlib import Path
-from .models import validate_blog_output, parse_frontmatter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from .models import validate_blog_output, parse_frontmatter, GenerationResult
 
 BLOG_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "blog.md"
 _DELIMS = ("<<<SOURCE_BEGIN>>>", "<<<SOURCE_END>>>")
@@ -69,3 +70,35 @@ def render_blog(item, fetched, date, timeout=180):
     if fm.get("source_url") != item.get("url"):
         raise ValueError(f"source_url mismatch: {fm.get('source_url')} != {item.get('url')}")
     return md
+
+def _gen_one(item, fetched, date, render, timeout, retries):
+    slug = f"{date}-{item.get('event_key','')}"
+    base = dict(event_key=item.get("event_key",""), title=item.get("title",""),
+                url=item.get("url",""), source=item.get("source",""),
+                source_type=item.get("source_type",""),
+                evidence_level=fetched.evidence_level, slug=slug,
+                rank=item.get("rank",999), rationale=item.get("rationale",""))
+    if fetched.evidence_level == "exclude":
+        return GenerationResult(status="excluded", post_path=None, error="unverified", **base)
+    last = None
+    for _ in range(retries + 1):
+        try:
+            md = render(item, fetched, date, timeout=timeout)
+            r = GenerationResult(status="ok", post_path=f"posts/{slug}.md", **base)
+            r._md = md            # carried for staging; not serialized by to_dict()
+            return r
+        except Exception as e:
+            last = str(e)[:200]
+    return GenerationResult(status="failed", post_path=None, error=last, **base)
+
+def generate_all(items, fetched_map, date, *, max_workers=4, timeout=180, retries=1, render=None):
+    render = render or render_blog
+    todo = [it for it in items if it.get("event_key") in fetched_map]
+    out = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(_gen_one, it, fetched_map[it["event_key"]], date,
+                          render, timeout, retries): it for it in todo}
+        for f in as_completed(futs):
+            out.append(f.result())
+    out.sort(key=lambda r: r.rank)
+    return out
