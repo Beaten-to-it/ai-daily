@@ -18,3 +18,8 @@ secrets/
 
 # SDD scratch
 .superpowers/
+
+# P2 run scratch + python
+runs/
+__pycache__/
+.pytest_cache/

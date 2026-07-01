@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<rss version="2.0"><channel>
+<item><title>New AI model</title><link>https://ex.com/a?utm_source=rss</link>
+<pubDate>Mon, 30 Jun 2026 09:00:00 +0000</pubDate><description>summary</description></item>
+<item><title>Dup link</title><link>https://ex.com/a</link>
+<pubDate>Mon, 30 Jun 2026 10:00:00 +0000</pubDate><description>dup</description></item>
+</channel></rss>
