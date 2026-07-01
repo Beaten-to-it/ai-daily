@@ -51,6 +51,20 @@ def test_render_blog_raises_on_url_mismatch(monkeypatch):
     with pytest.raises(ValueError):
         generate.render_blog(_item(), _fetched(), "2026-07-01")
 
+def test_prompt_source_substituted_last(monkeypatch):
+    # §10 finding: SOURCE was substituted first, then trusted placeholders (<URL> etc.)
+    # ran over the WHOLE string -- untrusted fetched.text containing literal placeholder
+    # tokens got silently rewritten with trusted values INSIDE the source fence. The
+    # placeholder tokens must survive verbatim in the source region; the trusted url must
+    # not leak into it.
+    fr = FetchResult("x-launch", "https://x.test/a", "article",
+                      "evil <URL> <EVENT_KEY> <DATE> payload", "confirmed", "http", True)
+    p = generate.build_blog_prompt(_item(), fr, "2026-07-01")
+    begin, end = p.find("<<<SOURCE_BEGIN>>>"), p.find("<<<SOURCE_END>>>")
+    region = p[begin:end]
+    assert "<URL> <EVENT_KEY> <DATE>" in region        # literal tokens survived, unsubstituted
+    assert "https://x.test/a" not in region             # trusted url did not leak into the fence
+
 def test_render_blog_raises_on_duplicate_frontmatter_key(monkeypatch):
     # adversarial-review finding: parse_frontmatter is dict-based (last key wins), so a
     # duplicate source_url (fake first, real second) would slip past a naive check on the

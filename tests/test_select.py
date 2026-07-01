@@ -1,4 +1,28 @@
 from nbs import select
+
+def test_run_claude_disables_tools_and_uses_stdin(monkeypatch):
+    # §10: select processes untrusted RSS/X/Reddit candidate text via claude -p; it needs
+    # text->JSON generation only, no tool access. --tools "" is the empirically-verified
+    # no-tool flag (task-4-report.md Step 0; --allowedTools "" does NOT restrict).
+    seen = {}
+    class R: returncode = 0; stdout = "ok"; stderr = ""
+    def fake_run(cmd, **kw):
+        seen["cmd"] = cmd; seen["input"] = kw.get("input"); seen["timeout"] = kw.get("timeout")
+        return R()
+    monkeypatch.setattr(select.subprocess, "run", fake_run)
+    out = select.run_claude("hello", timeout=7)
+    assert out == "ok" and "--tools" in seen["cmd"]
+    assert seen["input"] == "hello" and seen["timeout"] == 7
+
+def test_run_claude_default_timeout_is_300(monkeypatch):
+    seen = {}
+    class R: returncode = 0; stdout = "ok"; stderr = ""
+    def fake_run(cmd, **kw):
+        seen["timeout"] = kw.get("timeout"); return R()
+    monkeypatch.setattr(select.subprocess, "run", fake_run)
+    select.run_claude("hello")
+    assert seen["timeout"] == 300
+
 def test_parse_strips_fences():
     raw='설명\n```json\n{"date":"2026-07-01","items":[],"selected_count":0,"skipped_count":0,"generated_with":"claude-p"}\n```\n끝'
     assert select.parse_selection(raw)["date"]=="2026-07-01"

@@ -12,13 +12,17 @@ def _sanitize_source(text):
     return text
 
 def build_blog_prompt(item, fetched, date):
+    # §10: <<SOURCE>> (untrusted fetched.text) must be substituted LAST. Trusted-placeholder
+    # replacements run over the WHOLE string, so if SOURCE went in first, untrusted text
+    # containing literal placeholder tokens (e.g. "<URL>") would get rewritten with trusted
+    # values from inside the source fence -- a template-injection gap.
     tmpl = BLOG_PROMPT.read_text(encoding="utf-8")
-    return (tmpl.replace("<<SOURCE>>", _sanitize_source(fetched.text))
-                .replace("<DATE>", date)
-                .replace("<EVENT_KEY>", item.get("event_key",""))
-                .replace("<SOURCE_TYPE>", item.get("source_type",""))
-                .replace("<EVIDENCE_LEVEL>", fetched.evidence_level)
-                .replace("<URL>", item.get("url","")))
+    filled = (tmpl.replace("<DATE>", date)
+                  .replace("<EVENT_KEY>", item.get("event_key",""))
+                  .replace("<SOURCE_TYPE>", item.get("source_type",""))
+                  .replace("<EVIDENCE_LEVEL>", fetched.evidence_level)
+                  .replace("<URL>", item.get("url","")))
+    return filled.replace("<<SOURCE>>", _sanitize_source(fetched.text))
 
 def run_claude_notools(text, timeout=180):
     # --tools "" : empty tool set = NO tool access, incl. MCP (§10 boundary).
