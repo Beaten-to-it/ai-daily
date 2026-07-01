@@ -60,3 +60,13 @@ def test_strip_srt_removes_timestamps_and_indices():
     srt = "1\n00:00:01,000 --> 00:00:03,000\nHello world\n\n2\n00:00:03,000 --> 00:00:05,000\nSecond line\n"
     out = fetch._strip_srt(srt)
     assert out == "Hello world\nSecond line"
+
+def test_strip_srt_dedupes_rolling_captions():
+    vtt = (
+        "WEBVTT\nKind: captions\nLanguage: en\n\n"
+        "00:00:00.000 --> 00:00:02.000\nhello world this\n\n"
+        "00:00:01.000 --> 00:00:03.000\nhello world this is a test\n\n"
+        "00:00:02.000 --> 00:00:04.000\nthis is a test\n"
+    )
+    out = fetch._strip_srt(vtt)
+    assert out == "hello world this is a test"

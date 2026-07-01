@@ -125,10 +125,11 @@ def fetch_sns(item):
     return "", "opencli", False
 
 def _strip_srt(raw):
-    # ponytail: no dedup of overlapping/rolling auto-caption lines (YouTube auto-vtt
-    # repeats fragments across cues) -- ceiling is duplicated text in evidence, not
-    # broken text. Upgrade if that shows up in generation quality: drop a cue line
-    # that's a prefix/suffix of the previous kept line.
+    # ponytail: containment-based dedup collapses rolling auto-caption overlap
+    # (each new cue is a superset/subset of the previous kept line, the common
+    # case for YouTube auto-vtt). Ceiling: partial word-boundary overlap that
+    # isn't a full substring won't collapse -- upgrade to a suffix/prefix
+    # longest-common-overlap merge if that shows up in evidence text.
     out = []
     for line in raw.splitlines():
         s = re.sub(r"<[^>]+>", "", line).strip()  # drop <c> word-timing tags (auto-subs)
@@ -136,6 +137,13 @@ def _strip_srt(raw):
             continue
         if s == "WEBVTT" or s.startswith(("Kind:", "Language:")):
             continue  # VTT header lines (Step 0: ffmpeg absent -> yt-dlp keeps .vtt, not .srt)
+        if out:
+            prev = out[-1]
+            if prev in s:
+                out[-1] = s   # rolling cue grew -> supersedes previous
+                continue
+            if s in prev:
+                continue      # rolling fragment already covered by previous
         out.append(s)
     return "\n".join(out)
 
