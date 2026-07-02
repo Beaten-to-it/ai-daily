@@ -359,7 +359,7 @@ def _init_repo_with_remote(tmp_path, monkeypatch):
 def test_push_success_marks_pushed(tmp_path, monkeypatch):
     root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
     _publish_news(root, "2026-07-01", pushed=False)
-    status, sha = orchestrate._push("2026-07-01")
+    status, sha, _ = orchestrate._push("2026-07-01")
     assert status=="published" and sha
     st = json.loads((root/"runs"/"2026-07-01"/"publish.json").read_text())
     assert st["pushed"] is True and st["deployed_sha"]==sha
@@ -372,7 +372,7 @@ def test_push_rejected_on_divergence(tmp_path, monkeypatch):
     (other/"x.txt").write_text("o\n"); _git_in(["add","-A"], other)
     _git_in(["commit","-qm","other"], other); _git_in(["branch","-M","main"], other); _git_in(["push","-q","origin","main"], other)
     _publish_news(root, "2026-07-01", pushed=False)
-    status, sha = orchestrate._push("2026-07-01")
+    status, sha, _ = orchestrate._push("2026-07-01")
     assert status=="push_rejected" and sha is None
 
 def test_mark_pushed_creates_when_absent(tmp_path, monkeypatch):
@@ -629,8 +629,8 @@ def run(date, *, force=False, no_push=False, runner=None, now=None):
             if action == "push_only":
                 st, sha, reason = _push(date)
                 base["stages"]["push"] = {"status": st, "reason": reason or "push-only recovery"}
-                return finish("published" if st == "published" else st,
-                              "re-pushed without regeneration")
+                top = "re-pushed without regeneration" if st == "published" else f"push-only recovery failed: {reason}"
+                return finish("published" if st == "published" else st, top)
             # action == "full"
             for name in STAGES:
                 rc = runner(name, date)
