@@ -22,7 +22,7 @@
 **Contract consumed (existing stage artifacts, all under `runs/<date>/`, gitignored scratch):**
 - `nbs.collect --date <d>` → `candidates.json` (JSON list). Empty list is NOT failure. rc≠0 = failure.
 - `nbs.select --date <d>` → `selection.json` `{date,items,selected_count,...}`. `selected_count==0` is NOT failure (writes the file, rc 0). Abort (schema/claude fail) = uncaught exception → rc≠0, file not written.
-- `nbs.stage --date <d>` → `generation.json` `{date,status(ok|skip-empty),...}` + `staging/`. rc≠0 = failure.
+- `nbs.stage --date <d>` → `generation.json` `{date,status(ok|skip-empty),...}` (+ internal `staging/`, which stage rebuilds each run; the orchestrator reads only `generation.json`). rc≠0 = failure.
 - `nbs.publish --date <d>` → `publish.json` `{date,status(published|held|failed),commit_sha,...}`. **publish's process exits 0 even for held/failed** — read `publish.json.status`, never publish's exit code.
 
 **Produced (new):**
@@ -132,14 +132,17 @@ from pathlib import Path
 def _git_in(args, cwd): return subprocess.run(["git"]+args, cwd=str(cwd), capture_output=True, text=True)
 
 def _init_repo(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "ROOT", tmp_path)
-    monkeypatch.setattr(orchestrate, "ROOT", tmp_path)
-    monkeypatch.setattr(orchestrate, "run_dir", lambda d: tmp_path/"runs"/d)
-    _git_in(["init","-q"], tmp_path); _git_in(["config","user.email","t@t"], tmp_path); _git_in(["config","user.name","t"], tmp_path)
-    (tmp_path/"content"/"news").mkdir(parents=True)
-    (tmp_path/".gitignore").write_text("runs/\n.orchestrate.lock\n", encoding="utf-8")
-    _git_in(["add","-A"], tmp_path); _git_in(["commit","-qm","init"], tmp_path)
-    return tmp_path
+    # ROOT is a SUBDIR of tmp_path so the bare remote / clone helpers can live OUTSIDE the
+    # worktree (else `git add -A` in ROOT would commit the bare remote's internals — Codex R1).
+    root = tmp_path/"repo"; root.mkdir()
+    monkeypatch.setattr(config, "ROOT", root)
+    monkeypatch.setattr(orchestrate, "ROOT", root)
+    monkeypatch.setattr(orchestrate, "run_dir", lambda d: root/"runs"/d)
+    _git_in(["init","-q"], root); _git_in(["config","user.email","t@t"], root); _git_in(["config","user.name","t"], root)
+    (root/"content"/"news").mkdir(parents=True)
+    (root/".gitignore").write_text("runs/\n.orchestrate.lock\n", encoding="utf-8")
+    _git_in(["add","-A"], root); _git_in(["commit","-qm","init"], root)
+    return root
 
 def _publish_news(root, date, pushed=None):
     (root/"content"/"news").mkdir(parents=True, exist_ok=True)
@@ -336,8 +339,8 @@ Claude-Session: https://claude.ai/code/session_01VPUtXZyTzXtKwJfkZG3e5H"
 
 **Interfaces:**
 - Produces: `_mark_pushed(date, sha)` — atomically set `pushed=true`+`deployed_sha=sha` in `runs/<date>/publish.json` (create a minimal `{date,status:published,pushed,deployed_sha}` if the file is absent, e.g. scratch wiped). temp + `os.replace`.
-- Produces: `_classify_push_failure() -> (status, reason)` — query `git ls-remote origin refs/heads/main`; if it fails → `("push_pending", …)`; else if the remote SHA is NOT an ancestor of local HEAD → `("push_rejected", …)` (divergence); else → `("push_pending", …)` (remote behind → transient). No stderr parsing.
-- Produces: `_push(date) -> (status, sha|None)` — `git push origin main`; on success verify `git rev-parse origin/main == HEAD`, `_mark_pushed`, return `("published", sha)`. On push failure return `_classify_push_failure()` + None.
+- Produces: `_classify_push_failure(head) -> (status, sha|None, reason)` — query `git ls-remote origin refs/heads/main`; empty/failed → `("push_pending", None, …)`; remote SHA == head → `("published", sha, …)` (push actually landed); remote SHA NOT an ancestor of HEAD → `("push_rejected", None, …)` (divergence); else → `("push_pending", None, …)` (remote behind → transient). No stderr parsing.
+- Produces: `_push(date) -> (status, sha|None, reason)` — `git push origin main`; on success verify `git rev-parse origin/main == HEAD`, `_mark_pushed`, return `("published", sha, "")`. On failure classify via `_classify_push_failure(head)`; if that resolves to `published` (remote already at HEAD), `_mark_pushed` and return published.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -346,8 +349,9 @@ Claude-Session: https://claude.ai/code/session_01VPUtXZyTzXtKwJfkZG3e5H"
 import os
 
 def _init_repo_with_remote(tmp_path, monkeypatch):
-    root=_init_repo(tmp_path, monkeypatch)
-    bare = tmp_path/"remote.git"; _git_in(["init","--bare","-q",str(bare)], tmp_path)
+    root=_init_repo(tmp_path, monkeypatch)           # root = tmp_path/repo
+    bare = tmp_path/"remote.git"                      # SIBLING of root — outside the worktree
+    _git_in(["init","--bare","-q",str(bare)], tmp_path)
     _git_in(["remote","add","origin",str(bare)], root)
     _git_in(["branch","-M","main"], root)
     return root, bare
@@ -376,6 +380,25 @@ def test_mark_pushed_creates_when_absent(tmp_path, monkeypatch):
     orchestrate._mark_pushed("2026-07-01", "deadbeef")
     st = json.loads((root/"runs"/"2026-07-01"/"publish.json").read_text())
     assert st["pushed"] is True and st["deployed_sha"]=="deadbeef" and st["status"]=="published"
+
+def test_classify_push_failure_discriminates(tmp_path, monkeypatch):
+    # discriminates the merge-base DIRECTION: a remote that is BEHIND (ancestor of HEAD) must be
+    # push_pending, not push_rejected. Reversing the is-ancestor args would break this case.
+    root=_init_repo(tmp_path, monkeypatch)
+    orig = orchestrate._git
+    def stub(stdout):
+        def g(args):
+            if args[:2]==["ls-remote","origin"]:
+                return type("R",(),{"returncode":0,"stdout":stdout})()
+            return orig(args)
+        monkeypatch.setattr(orchestrate, "_git", g)
+    A=_git_in(["rev-parse","HEAD"], root).stdout.strip()
+    (root/"b").write_text("b"); _git_in(["add","-A"], root); _git_in(["commit","-qm","B"], root)
+    C=_git_in(["rev-parse","HEAD"], root).stdout.strip()
+    stub(f"{C}\trefs/heads/main\n"); assert orchestrate._classify_push_failure(C)[0]=="published"     # equal
+    stub(f"{A}\trefs/heads/main\n"); assert orchestrate._classify_push_failure(C)[0]=="push_pending"  # behind (direction!)
+    stub("0"*40+"\trefs/heads/main\n"); assert orchestrate._classify_push_failure(C)[0]=="push_rejected"  # diverged
+    stub(""); assert orchestrate._classify_push_failure(C)[0]=="push_pending"                          # empty/unreachable
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -403,26 +426,32 @@ def _mark_pushed(date, sha):
     except Exception:
         os.path.exists(tmp) and os.remove(tmp); raise
 
-def _classify_push_failure():
+def _classify_push_failure(head):
+    # classify a FAILED `git push` by querying the live remote (never parse git stderr).
     ls = _git(["ls-remote", "origin", "refs/heads/main"])
     if ls.returncode != 0 or not ls.stdout.strip():
-        return "push_pending", "remote unreachable (ls-remote failed)"
+        return "push_pending", None, "origin/main absent or ls-remote failed"
     remote_sha = ls.stdout.split()[0]
+    if remote_sha == head:                       # push actually landed (client died post-update)
+        return "published", remote_sha, "push rc!=0 but origin/main already equals HEAD"
     # non-fast-forward iff the remote tip is NOT an ancestor of our HEAD (origin diverged)
     if _git(["merge-base", "--is-ancestor", remote_sha, "HEAD"]).returncode != 0:
-        return "push_rejected", f"origin/main diverged (remote {remote_sha[:12]} not ancestor of HEAD)"
-    return "push_pending", "push failed but origin is behind (transient)"
+        return "push_rejected", None, f"origin/main diverged (remote {remote_sha[:12]} not ancestor of HEAD)"
+    return "push_pending", None, "push failed but origin is behind (transient)"
 
 def _push(date):
-    # returns (status, sha_or_None). status ∈ {published, push_pending, push_rejected}
-    if _git(["push", "origin", "main"]).returncode != 0:
-        status, _reason = _classify_push_failure()
-        return status, None
+    # returns (status, sha_or_None, reason). status ∈ {published, push_pending, push_rejected}
     head = _git(["rev-parse", "HEAD"]).stdout.strip()
+    if _git(["push", "origin", "main"]).returncode != 0:
+        status, sha, reason = _classify_push_failure(head)
+        if status == "published":                # remote already at HEAD → record it
+            _mark_pushed(date, sha)
+            return "published", sha, reason
+        return status, None, reason
     if _git(["rev-parse", "origin/main"]).stdout.strip() != head:
-        return "push_pending", None   # push reported success but ref didn't advance
+        return "push_pending", None, "push reported success but origin/main did not advance"
     _mark_pushed(date, head)
-    return "published", head
+    return "published", head, ""
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -476,6 +505,8 @@ def _fake_runner_factory(root, *, outcomes):
         if name=="stage":
             (d/"generation.json").write_text(json.dumps({"date":date,"status":"skip-empty" if o=="empty" else "ok"})); return 0 if o!="rc1" else 1
         if name=="publish":
+            if o=="rc1":                      # crashed publish: leave any stale publish.json, rc!=0
+                return 1
             status = "held" if o=="held" else "published"
             (d/"publish.json").write_text(json.dumps({"date":date,"status":status,"commit_sha":"abc"}))
             if status=="published":
@@ -494,10 +525,26 @@ def test_run_full_publishes_and_pushes(tmp_path, monkeypatch):
     assert st["pushed"] is True
     assert (root/"runs"/"2026-07-01"/"run.json").exists() and m["run_id"] and m["started_at"]
 
+def _spy_push(monkeypatch):
+    calls = {"n": 0}
+    monkeypatch.setattr(orchestrate, "_push",
+                        lambda date: (calls.__setitem__("n", calls["n"]+1) or ("published", "sha", "")))
+    return calls
+
 def test_run_held_does_not_push(tmp_path, monkeypatch):
     root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    pushes = _spy_push(monkeypatch)
     m = orchestrate.run("2026-07-01", runner=_fake_runner_factory(root, outcomes={"publish":"held"}), now=_fixed_now())
-    assert m["status"]=="held" and m["stages"]["push"]["status"]=="skipped"
+    assert m["status"]=="held" and m["stages"]["push"]["status"]=="skipped" and pushes["n"]==0
+
+def test_run_publish_crash_not_reported_published(tmp_path, monkeypatch):
+    # BLOCK: a stale publish.json{published} + a crashed publish (rc!=0) must be FAILED, never pushed
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    d = root/"runs"/"2026-07-01"; d.mkdir(parents=True, exist_ok=True)
+    (d/"publish.json").write_text(json.dumps({"date":"2026-07-01","status":"published"}))  # stale from prior run
+    pushes = _spy_push(monkeypatch)
+    m = orchestrate.run("2026-07-01", runner=_fake_runner_factory(root, outcomes={"publish":"rc1"}), now=_fixed_now())
+    assert m["status"]=="failed" and m["stages"]["publish"]["status"]=="failed" and pushes["n"]==0
 
 def test_run_aborts_on_stage_failure(tmp_path, monkeypatch):
     root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
@@ -525,8 +572,9 @@ def test_run_pushonly_recovers_without_regen(tmp_path, monkeypatch):
 
 def test_run_no_push_flag(tmp_path, monkeypatch):
     root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    pushes = _spy_push(monkeypatch)
     m = orchestrate.run("2026-07-01", runner=_fake_runner_factory(root, outcomes={}), no_push=True, now=_fixed_now())
-    assert m["status"]=="published" and m["stages"]["push"]["status"]=="skipped"
+    assert m["status"]=="published" and m["stages"]["push"]["status"]=="skipped" and pushes["n"]==0
     assert json.loads((root/"runs"/"2026-07-01"/"publish.json").read_text()).get("pushed") is None
 
 def test_run_rejects_bad_date(tmp_path, monkeypatch):
@@ -579,17 +627,25 @@ def run(date, *, force=False, no_push=False, runner=None, now=None):
             if action == "skip":
                 return finish("skipped", "already published and pushed")
             if action == "push_only":
-                st, sha = _push(date)
-                base["stages"]["push"] = {"status": st, "reason": "push-only recovery"}
+                st, sha, reason = _push(date)
+                base["stages"]["push"] = {"status": st, "reason": reason or "push-only recovery"}
                 return finish("published" if st == "published" else st,
                               "re-pushed without regeneration")
             # action == "full"
             for name in STAGES:
                 rc = runner(name, date)
                 if name == "publish":
-                    pj = _publish_state(date) or {}
-                    pstatus = pj.get("status", "failed")
-                    base["stages"]["publish"] = {"status": pstatus, "reason": pj.get("reason","")}
+                    # publish exits 0 even for held/failed — but a CRASHED publish (rc!=0) must
+                    # NOT be read as a stale prior publish.json{published}. Gate on rc+artifact first.
+                    ok, reason = _stage_ok("publish", date, rc)
+                    if not ok:
+                        base["stages"]["publish"] = {"status": "failed", "reason": reason}
+                        return finish("failed", f"publish: {reason}")
+                    pstatus = (_publish_state(date) or {}).get("status")
+                    if pstatus not in ("published", "held", "failed"):
+                        base["stages"]["publish"] = {"status": "failed", "reason": f"unknown publish status {pstatus!r}"}
+                        return finish("failed", f"unknown publish status {pstatus!r}")
+                    base["stages"]["publish"] = {"status": pstatus, "reason": ""}
                     if pstatus != "published":
                         return finish(pstatus, f"publish {pstatus}")   # held/failed -> no push
                     break
@@ -600,9 +656,9 @@ def run(date, *, force=False, no_push=False, runner=None, now=None):
             if no_push:
                 base["stages"]["push"] = {"status": "skipped", "reason": "--no-push"}
                 return finish("published", "published (push skipped)")
-            st, sha = _push(date)
-            base["stages"]["push"] = {"status": st, "reason": ""}
-            return finish("published" if st == "published" else st, "")
+            st, sha, reason = _push(date)
+            base["stages"]["push"] = {"status": st, "reason": reason}
+            return finish("published" if st == "published" else st, reason)
     except Busy:
         base["status"] = "busy"; base["reason"] = "another run in progress"
         return base   # do not clobber the other run's run.json
