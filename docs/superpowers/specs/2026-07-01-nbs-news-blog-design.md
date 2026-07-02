@@ -234,6 +234,36 @@
 
 ---
 
+## 16. AX 경영 (3번째 1급 산출물)
+
+**확정 (2026-07-03 — 사용자 요청):** News(개발자·창업자 톤)·UseCase(일반사용자 톤)와 평행한 **3번째 1급 일간 산출물 = AX 경영(경영자·임원 톤)**. AI 전환을 조직 운영 관점에서 재해석(시간 재투자·업무 폐지·판단권한 위임·역할 승급·이익 분배). 구조는 **UseCase 패턴을 그대로 복제**(신규 발명 0, 검증 파이프라인 재사용).
+
+- **콘텐츠 = 하루 1페이지 synthesis**(항목 나열 아님). 그날 발행된 뉴스/블로그(publishable results의 title+source+slug+본문 snippet)를 입력받아 경영 관점 함의로 재구성: "이 소식이 조직을 어떻게 바꾸나 / 리더가 뭘 다르게 해야 하나".
+- **⚠️ 콘텐츠 계약 = item-앵커 grounding (advisor R1 — BLOCK, §10 트러스트 경계):** 이 섹션의 최대 리스크는 "빈날 방지"가 아니라 **경영 신호 약한 날(흔한 경우)에 프롬프트가 그날 항목과 무관한 일반론(시간 재투자·역할 승급 같은 evergreen 원칙)을 지어내는 것**. `None` 가드는 publishable 개수만 보므로(오늘=14) 신호가 얕아도 풀페이지가 나온다 → 프롬프트로 강제:
+  1. **모든 경영 주장은 그날의 구체적 항목에 앵커**(evergreen 원칙 나열 금지 — "오늘 X 소식 때문에 → 조직에서 Y를 바꿔라" 형태). 근거는 입력 요약뿐, 요약에 없으면 쓰지 마라.
+  2. **짧아도 됨**을 명시 — 억지로 페이지 채우지 말고, 경영 각도가 실하게 붙는 1~3개만. 신호 약한 날은 "오늘은 조직 전환 관점 신호가 적다 + [해당되는 1~2개 항목]"로 짧게.
+  3. 짧아도 되지만 **모든 포인트는 그날 항목 relref로 앵커**(위 결정적 게이트). 그날 groundable 경영 각도가 **전혀** 없으면 → 게이트가 `ValueError`로 거부 → §5 격리(`ax_error`) → **그날 AX 페이지 없음**(억지 일반론 발행보다 낫다). `build_ax`의 `None`은 UseCase와 동일하게 **publishable==0(빈날)** 담당, 게이트 실패는 `ValueError`→`ax_error`.
+- **v1 상류 한계 (advisor R1 — 명시, 수정은 범위 밖):** AX는 `select`가 이미 개발자·창업자 관점으로 고른 publishable 블로그만 입력받는다 → **select의 편향을 상속**. 경영 관련 소식이 수집됐어도 블로그 컷을 못 넘으면 AX가 못 본다. 즉 v1 AX의 천장 = select가 표면화한 것. AX는 독립적으로 경영 콘텐츠를 사냥하지 않는다(전용 소스는 범위 밖).
+- **톤/독자 = 경영자·임원.** 실행 지향(다음 분기에 뭘 바꾸나). 전문 코딩 용어 최소.
+- **배선 (전부 UseCase 평행, 기존 스테이지 최소 수정):**
+  - `prompts/ax.md` — 경영자 톤 프롬프트. UseCase와 동일 골격(규칙: 근거는 요약뿐·지어내지 마라 / 출력: front matter `title: AI 경영 브리핑 <DATE>`·`date`·`tags:[ax]` + 본문 / `<<SUMMARIES>>` 입력 치환).
+  - `nbs/assemble.py` — `AX_PROMPT` 상수 + `build_ax(results, date, *, run=None)` = `build_usecase` 복제(claude -p `run_claude_notools`=`--tools ""`, `_strip_fences`, front matter `{title,date,tags}` 검증 + 비지않은 body, publishable 없으면 `None`). `<<SUMMARIES>>` 생성은 `build_usecase_prompt`의 라인빌더 재사용(중복 최소화 — 공통 헬퍼로 추출 또는 프롬프트경로 파라미터화).
+  - **⚠️ 결정적 grounding 게이트 (Codex R1 — BLOCK 수정):** 프롬프트만으로는 계약이 *방향*일 뿐 강제가 아니다(build_usecase 검증은 front matter+빈body만 봐서 evergreen 일반론도 형식만 맞으면 통과). 따라서 `build_ax`에 **기계적 게이트**(**필요조건이지 충분조건 아님** — 아래 (c) 참고): 프롬프트가 각 경영 포인트를 그날 항목에 `{{< relref "/posts/<slug>.md" >}}`로 **링크**하도록 지시하고, `build_ax`는 본문에서 slug을 추출해 조건 요구 —
+  - (a) **교집합 ≥1**(그날 항목에 실제 앵커; 0이면 순수 일반론 → 거부).
+  - (b) **추출 slug 전부가 그날 publishable slug ∈**(할루시네이션 slug 링크가 Hugo 빌드를 깨는 것 방지 — news 완결성 `링크==ok-slug`와 동일 결정적 패턴).
+  - **⚠️ (c) 형태 일관 (advisor R2 — MAJOR):** slug 추출은 **angle 형태만**(email `_RELREF_FULL` = `{{< relref "/posts/<slug>.md" >}}`) 인정하고, `publish._RELREF`(내부 토큰만 매칭 → `{{% relref %}}`도 통과)를 그대로 쓰지 마라. + 본문에 비-angle ref/relref shortcode(`{{% relref %}}`·`{{< ref >}}`)가 남으면 거부(email `_ANY_REF_SHORTCODE` parity). 이유: email `rewrite_relref`는 angle만 재작성하고 leftover `{{%`엔 **raise**하므로, 게이트가 permissive 토큰을 허용하면 AX가 렌더는 되고 **그날 이메일만 조용히 실패**한다(AX는 LLM 생성이라 유일하게 노출; news는 assemble이 angle만 emit). 게이트를 email과 **동일 angle 형태**로 맞춰 **gate-pass ⟹ email-safe ⟹ Hugo-safe** 일관.
+  위반 시 `ValueError`로 거부(§5 격리 → `ax_error`, 그날 AX 페이지 없음 — 억지 일반론/깨진 빌드/이메일 실패보다 낫다). §4 트러스트 경계 정합. 부수효과: AX 페이지가 근거 항목으로 클릭연결(UX↑).
+  - **한계 명시(advisor R2):** 이 게이트는 **degenerate(무앵커) 케이스만** 막는다. 90% 일반론 + 장식용 링크 1개인 fig-leaf 페이지는 형식상 통과한다 → 그건 **프롬프트 계약 + 사람 eyeball**이 담당(게이트만 믿지 마라).
+  - `nbs/stage.py` — `run(date, *, fetch=None, generate=None, usecase=None, ax=None)`(**기존 `=None` 기본값 보존** — CLI `run(a.date)` 무인자 호출 안 깨지게, Codex R1), `ax`는 기본 `asm.build_ax` 주입. UseCase 블록 옆에 `staging/ax/<date>.md` 생성, **§5 격리**(ax claude -p 실패=timeout/bad output → abort 금지, `ax_error` 기록). `generation.json`에 `ax_error` 필드 추가(usecase_error 평행). staging 하위디렉터리 목록에 `ax` 추가.
+  - `nbs/publish.py` — `date_writeset`에 `content/ax/<date>.md` 추가. `promote`에서 ax staging→content 승격(usecase와 동일 optional: 있으면 `_cp`, 없고 target 존재하면 stale drop). `build_verify`에 `ax/<date>/index.html` 렌더 확인(content ax 있을 때만). `_degraded`에 `ax`(=`gen["ax_error"]`) 추가.
+  - `hugo.toml` — ① `[[menu.main]]` `name="AX 경영"` `url="ax/"` `weight=0`(**최상단**, News 앞). ② **`params.mainSections`에 `"ax"` 추가(Codex R1 — 필수 터치포인트):** 현재 `["news","posts","usecase"]`인데 PaperMod가 홈 목록·아카이브·prev/next를 이 값으로 필터하므로, 빠지면 AX가 메뉴엔 보여도 홈/아카이브/nav에서 UseCase와 평행하지 않게 됨. PaperMod가 `/ax/` 섹션 자동 렌더(커스텀 layout 불필요).
+- **이메일 (P3b 확장):** `nbs/email.py` `read_content(date)`가 ax도 읽음(`git show origin/main:content/ax/<date>.md`, 없으면 `None` — usecase와 동일 optional). 본문 = News + UseCase + **AX 경영** 3섹션(각 preprocess). 게이트는 news 존재 불변(변경 없음). `read_content` 반환 형태 확장(현 `(news, usecase)` → `(news, usecase, ax)`); 관련 테스트 갱신. 저녁 reauth 후 발송분부터 적용.
+- **오늘치(2026-07-03) 즉시 반영:** 구현 후 오늘 14 results로 `build_ax` 1회 실행 → `content/ax/2026-07-03.md` 생성. **⚠️ push 전 grounding eyeball(advisor R1/R2):** 오늘은 진단상 최악-신호일이자 사용자가 기능을 판단할 페이지. 게이트는 "링크 있음"만 답하므로 **eyeball은 산문 실질을 읽는다** — 각 경영 주장이 링크된 그날 항목에서 **실제로 도출**됐나, 아니면 링크가 장식이고 본문은 일반론(fig-leaf)인가. **fig-leaf/evergreen으로 읽히면 발행 보류 → 프롬프트 계약 재조정**("발행 성공"이 "grounded"를 대체하지 않는다; 게이트 통과도 fig-leaf를 대체하지 않는다). 통과 시에만 publish 재실행(ax 포함) → push. (실 `claude -p` 1회 — Claude env, [[2026-07-02-claude-p-fails-under-codex-exec]].)
+- **테스트(네트워크 0):** `build_ax`(주입 run stub) — publishable 0 → `None` / front matter 누락 → ValueError / **grounding 게이트 각 조건별**: angle relref 0개(무앵커 일반론) → ValueError〔(a)〕 / valid slug + hallucinated(비-publishable) slug 섞임 → ValueError〔(b)〕 / `{{% relref %}}`·`{{< ref >}}` 잔존 → ValueError〔(c)〕 / **angle-form `{{< relref >}}` + 추출 slug 전부 publishable + ≥1** → 통과. · stage ax 격리(ax 실패 → ax_error 기록, 나머지 진행) · publish ax optional 승격+writeset+build_verify · email read_content ax 포함(fake git repo) · `params.mainSections`에 ax 포함(hugo.toml 검증). UseCase 테스트 평행.
+- **범위 밖(defer):** AX 경영 전용 수집 소스(현 소스로 충분) · 과거 날짜 백필 · AX 경영 전용 커스텀 layout.
+
+---
+
 ## 부록 A. Codex 적대 리뷰 반영 이력 (캡 2라운드)
 
 - **R1 (2026-07-01):** 12개 결함 접수. 반영 — 계층적 grounding+최소발행기준(§4), 실행 한도·실패격리(§5), event_key·confidence·keep편향(§6), preflight·catchup·알림(§7), 원자적 발행·idempotency(§8), 이메일 idempotency(§9), 프롬프트 인젝션·시크릿 강화(§10), **저작권 정책 신설(§11)**, 관측성(§12). 보류(YAGNI) — 임베딩/event cluster/quarantine 큐/Slack(§13).
@@ -244,3 +274,7 @@
 - **advisor R1:** 4건 — ① 시크릿 레포내 저장이 §10(레포밖) 위반(공개레포=치명) ② 재사용 토큰 광역 scope=계정탈취 blast radius ③ 이식 `_build_message` html-only=§9 텍스트fallback 누락 ④ 프로세스: Codex 패킷에 newsNblog 코드 포함해야 fidelity 판정 가능. + 명료화(run_id 순서, --force 전파). 전부 반영.
 - **Codex xhigh R1:** 40건(BLOCK 8·MAJOR 다수·MINOR). **반영(accepted):** 토큰 레포밖+gmail.send단일+chmod강제+원자적write-back(#1/3/4/5/34), ledger 레포밖+per-recipient게이트+O_EXCL임계구역(#6/7/31/32), href escape이중화+scheme검사강화+web_url validator+code선토큰화(#20/21/22/23/26), front matter·relref는 기존 `parse_frontmatter_strict`·`_RELREF` 재사용+relref잔존시 실패(#14/15/17/19), multipart/alternative(#27), From헤더+CRLF헤더인젝션방어+수신자검증(#28/29/30), 발송게이트=`publish.json.pushed`(#9/10/13/36), ledger=발송권위·run.json=관측(#12), usecase degraded규칙(#37), 640px(#2), SITE_BASEURL config단일화(#38), KST date(#39), 테스트확장(#40), Message-ID+gmail_id병기(#33), token_invalid reason(#35). **부분반려:** #8 `--force`에 별도 `--confirm` 요구 → 수동 명시 플래그라 과함(force행 reason 기록으로 갈음). **완화:** #18 slug URL-escape → 상류 `_SLUG_RE`가 charset보장이라 불필요(명시만). #25 LINK_RE 괄호URL → 알려진 한계 명시+테스트(우리 링크 괄호없음).
 - **R2 (2026-07-03) — 수렴 게이트:** **advisor R2** = 1 BLOCK: R1 fold의 발송게이트 `publish.json.pushed`(scratch)가 P3a git-authoritative 원칙 위배(wipe 후 standalone 재발송 false-negative) → **게이트를 `git cat-file -e origin/main:content/news`로 교체**(fix=correctness+단순화). + 과over-build 지적 → per-recipient·lockfile·Message-ID·원자적write-back을 **plan로 위임**(스펙은 결정/불변식만). **Codex R2**(수렴 스코프) = 2 BLOCK(모두 fold가 만든 내부모순): ①usecase 포함이 git-존재 vs `publish.json.degraded` 이중정의 → git-존재로 일원화 ②게이트 ref(origin/main) vs 본문 read(온디스크) 불일치 → **본문도 `git show origin/main:...` 동일 ref**로. 셋 다 반영. **2R 캡 도달 — 리뷰 종료.**
+
+### AX 경영(§16) 스펙 리뷰 (2026-07-03)
+- **advisor R1:** BLOCK — optional/None 가드가 post-count만 봐서 약신호일에 항목무관 일반론 날조(§10 위배). + v1 상류 한계(select 편향 상속) 명시 + 오늘치 rollout grounding eyeball 게이트. **Codex R1:** MAJOR `params.mainSections`에 ax 누락(PaperMod 홈/아카이브/nav 필터), MAJOR `stage.run` `=None` 기본값 보존, **BLOCK** grounding 계약이 프롬프트만(강제 아님)→ **결정적 게이트**(본문 relref가 그날 slug에 앵커) 신설. 전부 반영.
+- **R2 수렴:** **advisor R2** = MAJOR 게이트가 `publish._RELREF`(내부토큰) 쓰면 `{{% relref %}}`도 통과→그날 이메일만 조용히 실패(email은 angle만 재작성+leftover에 raise) → 게이트를 **angle-form(email `_RELREF_FULL`) 일관**으로 + 비-angle shortcode 거부(gate-pass⟹email·Hugo-safe). + 게이트는 필요조건이지 충분조건 아님(fig-leaf=프롬프트+eyeball 담당) 명시. **Codex R2** = 모순 1: 테스트 bullet이 게이트 (b)(c) 미반영("≥1→통과"로 축약) → 조건별 테스트로 정합. 반영. **2R 캡 도달 — 종료.**
