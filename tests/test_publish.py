@@ -106,6 +106,7 @@ def _init_repo(tmp_path, monkeypatch):
     for d in ("posts","news","usecase"): (tmp_path/"content"/d).mkdir(parents=True)
     (tmp_path/"data").mkdir()
     (tmp_path/"content"/".keep").write_text("x")
+    (tmp_path/".gitignore").write_text("runs/\n", encoding="utf-8")   # mirror prod: runs/ is scratch
     _git_in(["add","-A"], tmp_path); _git_in(["commit","-qm","init"], tmp_path)
     return tmp_path
 
@@ -206,3 +207,55 @@ def test_ledger_rows_raises_on_empty_summary(tmp_path, monkeypatch):
     (root/"content"/"posts"/"2026-07-01-a.md").write_text("---\ntitle: A\n---\n\n", encoding="utf-8")  # empty body
     with pytest.raises(ValueError):
         publish.ledger_rows(gen)
+
+import json
+def _stage_full(root, gen):
+    d=root/"runs"/gen["date"]; _stage_posts(root, gen)
+    (d/"generation.json").write_text(json.dumps(gen), encoding="utf-8"); return d
+
+def test_run_held_when_evidence_low(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    gen={"date":"2026-07-01","results":[_res("a","confirmed","ok"), _res("b","exclude","excluded"), _res("c","exclude","excluded")]}
+    _stage_full(root, gen)
+    m=publish.run("2026-07-01")
+    assert m["status"]=="held" and not (root/"content"/"news"/"2026-07-01.md").exists()
+    assert (root/"runs"/"2026-07-01"/"publish.json").exists()
+
+def test_run_publishes_and_writes_ledger_and_manifest(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(publish, "_hugo_build", lambda o: _render(o, "2026-07-01", ["2026-07-01-a","2026-07-01-b","2026-07-01-c"], usecase=True))
+    gen={"date":"2026-07-01","results":[_okres("a"),_okres("b"),_okres("c")]}
+    _stage_full(root, gen)
+    m=publish.run("2026-07-01")
+    assert m["status"]=="published" and m["commit_sha"]
+    assert (root/"content"/"news"/"2026-07-01.md").exists()
+    led=(root/"data"/"published.csv").read_text(encoding="utf-8")
+    assert "2026-07-01-a" in led and led.count("2026-07-01-a")==1
+    # idempotent rerun -> still published, still one row
+    m2=publish.run("2026-07-01")
+    assert m2["status"]=="published"
+    assert (root/"data"/"published.csv").read_text(encoding="utf-8").count("2026-07-01-a")==1
+
+def test_run_degraded_publishes_without_usecase(tmp_path, monkeypatch):
+    # §15: usecase optional — usecase_error set, no staging usecase file -> still publishes
+    root=_init_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(publish, "_hugo_build", lambda o: _render(o, "2026-07-01", ["2026-07-01-a","2026-07-01-b","2026-07-01-c"], usecase=False))
+    gen={"date":"2026-07-01","results":[_okres("a"),_okres("b"),_okres("c")], "usecase_error":"boom"}
+    d=root/"runs"/gen["date"]; staging=d/"staging"
+    for r in gen["results"]: _write_post(staging, r["slug"], r["event_key"], r["url"])
+    _write_news(staging, [r["slug"] for r in gen["results"]])       # NO usecase file
+    (d/"generation.json").write_text(json.dumps(gen), encoding="utf-8")
+    m=publish.run("2026-07-01")
+    assert m["status"]=="published" and m["degraded"].get("usecase")
+    assert not (root/"content"/"usecase"/"2026-07-01.md").exists()
+    assert (root/"content"/"news"/"2026-07-01.md").exists()
+
+def test_run_rolls_back_on_build_failure(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(publish, "_hugo_build", lambda o: 1)         # build fails
+    gen={"date":"2026-07-01","results":[_okres("a"),_okres("b"),_okres("c")]}
+    _stage_full(root, gen)
+    m=publish.run("2026-07-01")
+    assert m["status"]=="failed"
+    assert not (root/"content"/"posts"/"2026-07-01-a.md").exists()   # rolled back
+    assert _git_in(["status","--porcelain"], root).stdout.strip()==""  # clean tree/ledger

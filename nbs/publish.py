@@ -1,7 +1,8 @@
 import re
-import subprocess, shutil, tempfile
+import subprocess, shutil, tempfile, argparse, json
 from pathlib import Path
 from . import assemble
+from . import ledger as ledger_mod
 from .models import parse_frontmatter_strict, canonicalize_url, validate_blog_output
 from .config import ROOT, run_dir
 
@@ -164,3 +165,81 @@ def ledger_rows(gen):
             "confidence": "",
         })
     return rows
+
+def _write_manifest(date, payload):
+    (run_dir(date)/"publish.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
+
+def _degraded(gen):
+    ok, ev = len(_ok(gen)), len(_evidence(gen)); d = {}
+    if gen.get("usecase_error"): d["usecase"] = gen["usecase_error"]
+    if ok < ev or ok < assemble.FLOOR_N: d["generation_failed_count"] = ev - ok
+    return d
+
+def _commit_msg(date, gen):
+    return (f"publish(ai-daily): {date} — {len(_ok(gen))} posts"
+            "\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+            "\nClaude-Session: https://claude.ai/code/session_01VPUtXZyTzXtKwJfkZG3e5H")
+
+def _fail(date, gen, reason, error=None):
+    return _write_manifest(date, {"date": date, "status": "failed", "reason": reason,
+                                  "promoted": [], "degraded": _degraded(gen), "commit_sha": None, "error": error or reason})
+
+def run(date, *, do_commit=True):
+    d = run_dir(date)
+    gen = json.loads((d/"generation.json").read_text(encoding="utf-8"))
+    staging = d/"staging"
+    decision, reason = decide(gen)
+    if decision == "held":
+        return _write_manifest(date, {"date": date, "status": "held", "reason": reason,
+                                      "promoted": [], "degraded": _degraded(gen), "commit_sha": None, "error": None})
+    if not (_git(["config","user.email"]).stdout.strip() and _git(["config","user.name"]).stdout.strip()):
+        return _fail(date, gen, "git identity not configured")
+    ws = date_writeset(gen)
+    dirty = preflight_clean(ws)
+    if dirty:
+        return _fail(date, gen, f"write-set dirty: {dirty}")
+    if _git(["diff", "--cached", "--quiet"]).returncode != 0:
+        return _fail(date, gen, "git index not clean (staged changes present)")
+    cerrs = check_completeness(gen, staging)         # BEFORE promote — nothing to roll back
+    if cerrs:
+        return _fail(date, gen, "completeness", "; ".join(cerrs[:8]))
+    touched = []
+    try:
+        touched = promote(gen, staging)
+        berrs = build_verify(gen)
+        if berrs:
+            raise RuntimeError("; ".join(berrs[:8]))
+        ledger_mod.rewrite_date(date, ledger_rows(gen), path=ROOT/"data"/"published.csv")
+        commit_sha = None
+        if do_commit:
+            # R2-#1: `git add -- <pathspec>` fails (rc 128) on a ws path that neither exists
+            # nor is in HEAD (e.g. usecase on a degraded day). Add only real paths; keep full
+            # `ws` for the staged-subset check and rollback.
+            add_paths = [p for p in ws if (ROOT/p).exists() or _head_has(p)]
+            if _git(["add", "-A", "--"] + add_paths).returncode != 0:
+                raise RuntimeError("git add failed")
+            staged = [l for l in _git(["diff","--cached","--name-only"]).stdout.splitlines() if l.strip()]
+            if any(s not in ws for s in staged):
+                raise RuntimeError(f"unexpected staged paths: {[s for s in staged if s not in ws]}")
+            if _git(["diff","--cached","--quiet"]).returncode == 0:
+                commit_sha = _git(["rev-parse","HEAD"]).stdout.strip()   # nothing changed = idempotent no-op
+            else:
+                c = _git(["commit","-m", _commit_msg(date, gen)])
+                if c.returncode != 0:
+                    raise RuntimeError(f"git commit failed: {c.stderr[:200]}")
+                commit_sha = _git(["rev-parse","HEAD"]).stdout.strip()
+        return _write_manifest(date, {"date": date, "status": "published", "reason": "ok",
+                                      "promoted": touched, "degraded": _degraded(gen), "commit_sha": commit_sha, "error": None})
+    except Exception as e:
+        rollback(ws)                                  # date-scoped: restores content + ledger
+        return _fail(date, gen, "promote/verify/commit", str(e)[:200])
+
+def main():
+    ap = argparse.ArgumentParser(); ap.add_argument("--date", required=True)
+    ap.add_argument("--no-commit", action="store_true"); a = ap.parse_args()
+    m = run(a.date, do_commit=not a.no_commit)
+    print(f"[{m['status']}] {a.date} promoted={len(m['promoted'])} degraded={m['degraded']} reason={m['reason']}")
+
+if __name__ == "__main__":
+    main()
