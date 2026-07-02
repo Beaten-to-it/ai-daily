@@ -44,7 +44,11 @@ def decide_action(date, *, force):
     if force:
         return "full"
     if _head_has_news(date):
-        st = _publish_state(date) or {}
+        st = _publish_state(date)
+        if st is None:                          # scratch wiped but news in HEAD → recover by re-push
+            return "push_only"
+        if st.get("status") != "published":     # a held/failed manifest (e.g. a later --force run)
+            return "full"                       # means this day is NOT cleanly published → regenerate
         return "skip" if st.get("pushed") is True else "push_only"
     return "full"
 
@@ -72,7 +76,8 @@ def _stage_ok(name, date, rc):
 
 def _mark_pushed(date, sha):
     p = run_dir(date) / "publish.json"
-    st = _publish_state(date) or {"date": date, "status": "published"}
+    st = _publish_state(date) or {"date": date}
+    st["status"] = "published"   # we only mark after pushing a published HEAD; never keep held/failed
     st["pushed"] = True
     st["deployed_sha"] = sha
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -99,8 +104,10 @@ def _classify_push_failure(head):
 
 def _push(date):
     # returns (status, sha_or_None, reason). status ∈ {published, push_pending, push_rejected}
+    # push the ACTUAL published commit (HEAD) to remote main — NOT the local `main` branch,
+    # which may be stale/unrelated on a non-main or detached checkout.
     head = _git(["rev-parse", "HEAD"]).stdout.strip()
-    if _git(["push", "origin", "main"]).returncode != 0:
+    if _git(["push", "origin", "HEAD:refs/heads/main"]).returncode != 0:
         status, sha, reason = _classify_push_failure(head)
         if status == "published":                # remote already at HEAD → record it
             _mark_pushed(date, sha)
@@ -119,8 +126,15 @@ def _blank_stages():
     return {s: {"status": "skipped", "reason": ""} for s in STAGES + ["push"]}
 
 def _write_run(date, payload):
-    (run_dir(date)).mkdir(parents=True, exist_ok=True)
-    (run_dir(date)/"run.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    d = run_dir(date); d.mkdir(parents=True, exist_ok=True)
+    p = d/"run.json"
+    fd, tmp = tempfile.mkstemp(dir=str(d), suffix=".json")   # atomic: no truncated manifest on crash
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, p)
+    except Exception:
+        os.path.exists(tmp) and os.remove(tmp); raise
     return payload
 
 def run(date, *, force=False, no_push=False, runner=None, now=None):

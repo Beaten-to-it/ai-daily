@@ -210,7 +210,11 @@ def decide_action(date, *, force):
     if force:
         return "full"
     if _head_has_news(date):
-        st = _publish_state(date) or {}
+        st = _publish_state(date)
+        if st is None:                          # scratch wiped but news in HEAD → recover by re-push
+            return "push_only"
+        if st.get("status") != "published":     # a held/failed manifest (e.g. a later --force run)
+            return "full"                       # means this day is NOT cleanly published → regenerate
         return "skip" if st.get("pushed") is True else "push_only"
     return "full"
 ```
@@ -414,7 +418,8 @@ import os, tempfile
 
 def _mark_pushed(date, sha):
     p = run_dir(date) / "publish.json"
-    st = _publish_state(date) or {"date": date, "status": "published"}
+    st = _publish_state(date) or {"date": date}
+    st["status"] = "published"   # we only mark after pushing a published HEAD; never keep held/failed
     st["pushed"] = True
     st["deployed_sha"] = sha
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -441,8 +446,10 @@ def _classify_push_failure(head):
 
 def _push(date):
     # returns (status, sha_or_None, reason). status ∈ {published, push_pending, push_rejected}
+    # push the ACTUAL published commit (HEAD) to remote main — NOT the local `main` branch,
+    # which may be stale/unrelated on a non-main or detached checkout.
     head = _git(["rev-parse", "HEAD"]).stdout.strip()
-    if _git(["push", "origin", "main"]).returncode != 0:
+    if _git(["push", "origin", "HEAD:refs/heads/main"]).returncode != 0:
         status, sha, reason = _classify_push_failure(head)
         if status == "published":                # remote already at HEAD → record it
             _mark_pushed(date, sha)
@@ -613,8 +620,15 @@ def _blank_stages():
     return {s: {"status": "skipped", "reason": ""} for s in STAGES + ["push"]}
 
 def _write_run(date, payload):
-    (run_dir(date)).mkdir(parents=True, exist_ok=True)
-    (run_dir(date)/"run.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    d = run_dir(date); d.mkdir(parents=True, exist_ok=True)
+    p = d/"run.json"
+    fd, tmp = tempfile.mkstemp(dir=str(d), suffix=".json")   # atomic: no truncated manifest on crash
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, p)
+    except Exception:
+        os.path.exists(tmp) and os.remove(tmp); raise
     return payload
 
 def run(date, *, force=False, no_push=False, runner=None, now=None):
@@ -844,3 +858,12 @@ Claude-Session: https://claude.ai/code/session_01VPUtXZyTzXtKwJfkZG3e5H"
 - `push_pending` (exit 2) is the "retry via catchup" signal for P3c; `push_rejected`/`held`/`failed` (exit 1) are "give up + alert" for P3d. `busy` (exit 3) means a concurrent run held the lock.
 - The orchestrator never sends email and never runs on a timer — Gmail (P3b), systemd/preflight/catchup/Reddit-Chrome (P3c), alerts/metrics (P3d) are separate sub-projects.
 - Lock is global (one orchestrate at a time), not per-date — two dates must not run concurrently anyway (shared git index).
+
+## Post-implementation code-review round (advisor + Codex xhigh on the committed code)
+
+Beyond the spec/plan 2R, the committed `nbs/orchestrate.py` got its own adversarial pass (code is a distinct artifact — interaction bugs hide from task-by-task plan review). Fixed:
+- **BLOCK (advisor):** `--no-push` was ignored on the `push_only` recovery path → a dry-run smoke on a published-locally-not-pushed day pushed to real origin. Guarded.
+- **BLOCK (Codex):** `_push` pushed the local `main` branch but compared to `HEAD` → on a non-main/detached checkout the published commit never deploys. Now `git push origin HEAD:refs/heads/main`.
+- **MAJOR (Codex):** `decide_action` trusted `head_has_news` even when `publish.json.status` was held/failed (a later `--force` run) → stale edition re-pushed + `{held,pushed:true}`. Now requires `status=="published"` (or absent = recovery); `_mark_pushed` forces `status=published`.
+- **MINOR (Codex):** `run.json` now written atomically (temp+`os.replace`).
+- Added tests: pushonly+no_push, non-main-branch push, held-manifest→full, busy `run()`, force-republish, push_only→push_pending, main busy exit. Full suite 149 passed.

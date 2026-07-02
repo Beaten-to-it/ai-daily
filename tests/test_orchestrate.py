@@ -272,3 +272,48 @@ def test_main_passes_flags(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrate, "run", lambda date, **kw: seen.update(kw=kw) or {"status":"published","stages":{},"reason":"","date":date})
     orchestrate.main(["--date","2026-07-01","--force","--no-push"])
     assert seen["kw"]["force"] is True and seen["kw"]["no_push"] is True
+
+# --- Codex code-review coverage gaps ---
+
+def test_push_pushes_head_not_local_main(tmp_path, monkeypatch):
+    # BLOCK: _push must push the actual HEAD commit to origin main, even off a non-main branch
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)   # on main
+    _git_in(["checkout","-q","-b","feature"], root)              # move HEAD off main
+    _publish_news(root, "2026-07-01", pushed=False)              # commit news on feature
+    head=_git_in(["rev-parse","HEAD"], root).stdout.strip()
+    status, sha, _ = orchestrate._push("2026-07-01")
+    assert status=="published" and sha==head
+    assert _git_in(["ls-remote","origin","refs/heads/main"], root).stdout.split()[0]==head
+
+def test_decide_action_full_when_manifest_held(tmp_path, monkeypatch):
+    # MAJOR: news in HEAD but publish.json says held (a later --force run) -> full, not push_only
+    root=_init_repo(tmp_path, monkeypatch); _publish_news(root, "2026-07-01", pushed=None)
+    (root/"runs"/"2026-07-01"/"publish.json").write_text(json.dumps({"date":"2026-07-01","status":"held"}))
+    assert orchestrate.decide_action("2026-07-01", force=False) == "full"
+
+def test_run_busy_when_locked(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    with orchestrate._lock():
+        m = orchestrate.run("2026-07-01", runner=(lambda n,d:0), now=_fixed_now())
+    assert m["status"]=="busy" and not (root/"runs"/"2026-07-01"/"run.json").exists()
+
+def test_main_busy_exit_code(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    monkeypatch.setattr(orchestrate, "run", lambda date, **kw: {"status":"busy","stages":{},"reason":"x","date":date})
+    assert orchestrate.main(["--date","2026-07-01"]) == 3
+
+def test_run_force_republishes_already_published(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    orchestrate.run("2026-07-01", runner=_fake_runner_factory(root, outcomes={}), now=_fixed_now())  # published+pushed
+    calls={"n":0}
+    base=_fake_runner_factory(root, outcomes={})
+    def counting(name,date): calls["n"]+=1; return base(name,date)
+    m = orchestrate.run("2026-07-01", force=True, runner=counting, now=_fixed_now())
+    assert m["status"]=="published" and calls["n"]==4   # force re-ran the full pipeline (would skip without force)
+
+def test_run_pushonly_reports_push_pending(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    _publish_news(root, "2026-07-01", pushed=False)   # push_only state
+    monkeypatch.setattr(orchestrate, "_push", lambda date: ("push_pending", None, "network"))
+    m = orchestrate.run("2026-07-01", runner=(lambda n,d:0), now=_fixed_now())
+    assert m["status"]=="push_pending" and m["stages"]["push"]["status"]=="push_pending"
