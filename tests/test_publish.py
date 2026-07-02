@@ -312,3 +312,30 @@ def test_run_rejects_unsafe_slug(tmp_path, monkeypatch):
     assert not (root/"content"/"_index.md").exists()                 # no traversal write
     assert not (root/"content"/"posts"/"2026-07-01-b.md").exists()   # nothing promoted
     assert _git_in(["status","--porcelain"], root).stdout.strip()==""
+
+def test_run_rejects_traversal_gen_date(tmp_path, monkeypatch):
+    # Codex R2 BLOCK: a corrupt generation.json "date" must not path-traverse; run() pins it
+    # to the validated arg before any fs use.
+    root=_init_repo(tmp_path, monkeypatch)
+    (root/"content"/"_index.md").write_text("keep\n", encoding="utf-8")
+    _git_in(["add","-A"], root); _git_in(["commit","-qm","idx"], root)
+    gen={"date":"../_index","results":[_okres("a"),_okres("b"),_okres("c")]}
+    d=root/"runs"/"2026-07-01"; d.mkdir(parents=True, exist_ok=True)
+    (d/"generation.json").write_text(json.dumps(gen), encoding="utf-8")
+    m=publish.run("2026-07-01")
+    assert m["status"]=="failed" and "date" in (m["reason"]+ (m["error"] or "")).lower()
+    assert (root/"content"/"_index.md").read_text()=="keep\n"         # tracked file untouched
+    assert _git_in(["status","--porcelain"], root).stdout.strip()==""
+
+def test_run_rejects_invalid_date_arg(tmp_path, monkeypatch):
+    # Codex R2 BLOCK: an invalid date arg must be rejected BEFORE run_dir(date) (manifest path).
+    root=_init_repo(tmp_path, monkeypatch)
+    m=publish.run("../evil")
+    assert m["status"]=="failed"
+    assert not (root/"evil").exists()          # run_dir("../evil") would be ROOT/evil — no write
+
+def test_completeness_rejects_cross_date_slug(tmp_path):
+    # Codex R2 MAJOR: a charset-safe slug from ANOTHER day must be rejected (date-scoped).
+    gen={"date":"2026-07-01","results":[{"event_key":"x","evidence_level":"confirmed","status":"ok",
+         "slug":"2026-06-30-x","url":"https://x/x","post_path":"posts/2026-06-30-x.md","title":"T","source":"S"}]}
+    assert any("date-scoped" in e for e in check_completeness(gen, tmp_path/"s"))

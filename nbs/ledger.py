@@ -23,11 +23,10 @@ def rewrite_date(date, rows, path=None):
     try:
         with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=LEDGER_HEADER); w.writeheader()
-            # stable sort by date so the file is a pure function of its rows, independent of
-            # which date was (re)written last — a rerun of an OLDER day must not reorder rows
-            # (reorder = CSV diff = spurious commit, breaking idempotency). intra-date order
-            # is preserved (Python sort is stable; rows come rank-sorted from ledger_rows).
-            for r in sorted(kept + list(rows), key=lambda r: r.get("date", "")):
+            # sort by (date, event_key) so the file is a pure function of its row SET, fully
+            # independent of publish order AND intra-date input order — any rerun reproduces
+            # byte-identical output (no reorder = no CSV diff = no spurious commit).
+            for r in sorted(kept + list(rows), key=lambda r: (r.get("date", ""), r.get("event_key", ""))):
                 w.writerow({k: r.get(k, "") for k in LEDGER_HEADER})
         os.replace(tmp, p)
     except Exception:

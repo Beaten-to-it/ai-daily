@@ -15,6 +15,9 @@ _RELREF = re.compile(r'relref\s+"/posts/([^"]+?)\.md"')
 # fullmatch (not match): `$` matches before a trailing newline, so `re.match` would accept
 # "evil\n"; fullmatch requires the WHOLE string to be in-charset.
 _SLUG_RE = re.compile(r"[a-z0-9-]{1,120}")
+# date is ALSO a path component (runs/<date>, content/news/<date>.md, staging/<date>). A
+# corrupt generation.json "date":"../_index" would path-traverse exactly like a bad slug.
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 def _body(md):
     end = md.find("---", md.find("---") + 3)   # skip front matter
@@ -54,6 +57,8 @@ def check_completeness(gen, staging):
         slug = r.get("slug", "")
         if not _SLUG_RE.fullmatch(slug):    # reject-and-isolate: unsafe slug never touches fs/git
             errs.append(f"unsafe slug rejected: {slug!r}"); continue
+        if slug != f"{date}-{r.get('event_key','')}":   # §"date-scoped": slug must be THIS day's
+            errs.append(f"{slug}: slug not date-scoped (expected {date}-{r.get('event_key','')})"); continue
         slugs.append(slug); eks.append(r.get("event_key")); canons.append(canonicalize_url(r.get("url", "")))
         if r.get("post_path") != f"posts/{slug}.md":
             errs.append(f"{slug}: post_path != posts/{slug}.md (got {r.get('post_path')})")
@@ -195,8 +200,16 @@ def _fail(date, gen, reason, error=None):
                                   "promoted": [], "degraded": _degraded(gen), "commit_sha": None, "error": error or reason})
 
 def run(date, *, do_commit=True):
+    # validate the date arg BEFORE run_dir(date) (used for manifest path) can traverse.
+    if not _DATE_RE.fullmatch(date or ""):
+        return {"date": date, "status": "failed", "reason": "invalid date",
+                "promoted": [], "degraded": {}, "commit_sha": None, "error": "date must be YYYY-MM-DD"}
     d = run_dir(date)
     gen = json.loads((d/"generation.json").read_text(encoding="utf-8"))
+    # gen["date"] flows into fs paths everywhere (date_writeset/promote/build_verify); pin it to
+    # the validated arg so a corrupt generation.json date cannot escape the date scope.
+    if gen.get("date") != date:
+        return _fail(date, gen, "generation.json date mismatch", f"{gen.get('date')!r} != {date!r}")
     staging = d/"staging"
     decision, reason = decide(gen)
     if decision == "held":
