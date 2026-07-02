@@ -148,3 +148,97 @@ def test_classify_push_failure_discriminates(tmp_path, monkeypatch):
     stub(f"{A}\trefs/heads/main\n"); assert orchestrate._classify_push_failure(C)[0]=="push_pending"  # behind (direction!)
     stub("0"*40+"\trefs/heads/main\n"); assert orchestrate._classify_push_failure(C)[0]=="push_rejected"  # diverged
     stub(""); assert orchestrate._classify_push_failure(C)[0]=="push_pending"                          # empty/unreachable
+
+from datetime import datetime
+
+def _fixed_now(): return datetime(2026,7,1,9,0,0, tzinfo=config.KST)
+
+def _fake_runner_factory(root, *, outcomes):
+    # outcomes: dict stage-> ("ok"|"rc1"|"held"|"empty"). Writes the artifact a real stage would,
+    # and for a successful publish, commits content/news/<date>.md so head_has_news becomes true.
+    def runner(name, date):
+        d = root/"runs"/date; d.mkdir(parents=True, exist_ok=True)
+        o = outcomes.get(name, "ok")
+        if name=="collect":
+            (d/"candidates.json").write_text(json.dumps([] if o=="empty" else [{"url":"u"}])); return 0 if o!="rc1" else 1
+        if name=="select":
+            (d/"selection.json").write_text(json.dumps({"date":date,"items":[],"selected_count":0 if o=="empty" else 3})); return 0 if o!="rc1" else 1
+        if name=="stage":
+            (d/"generation.json").write_text(json.dumps({"date":date,"status":"skip-empty" if o=="empty" else "ok"})); return 0 if o!="rc1" else 1
+        if name=="publish":
+            if o=="rc1":                      # crashed publish: leave any stale publish.json, rc!=0
+                return 1
+            status = "held" if o=="held" else "published"
+            (d/"publish.json").write_text(json.dumps({"date":date,"status":status,"commit_sha":"abc"}))
+            if status=="published":
+                (root/"content"/"news").mkdir(parents=True, exist_ok=True)
+                (root/"content"/"news"/f"{date}.md").write_text("x\n")
+                _git_in(["add","-A"], root); _git_in(["commit","-qm",f"pub {date}"], root)
+            return 0
+    return runner
+
+def test_run_full_publishes_and_pushes(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    m = orchestrate.run("2026-07-01", runner=_fake_runner_factory(root, outcomes={}), now=_fixed_now())
+    assert m["status"]=="published"
+    assert m["stages"]["push"]["status"]=="published"
+    st = json.loads((root/"runs"/"2026-07-01"/"publish.json").read_text())
+    assert st["pushed"] is True
+    assert (root/"runs"/"2026-07-01"/"run.json").exists() and m["run_id"] and m["started_at"]
+
+def _spy_push(monkeypatch):
+    calls = {"n": 0}
+    monkeypatch.setattr(orchestrate, "_push",
+                        lambda date: (calls.__setitem__("n", calls["n"]+1) or ("published", "sha", "")))
+    return calls
+
+def test_run_held_does_not_push(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    pushes = _spy_push(monkeypatch)
+    m = orchestrate.run("2026-07-01", runner=_fake_runner_factory(root, outcomes={"publish":"held"}), now=_fixed_now())
+    assert m["status"]=="held" and m["stages"]["push"]["status"]=="skipped" and pushes["n"]==0
+
+def test_run_publish_crash_not_reported_published(tmp_path, monkeypatch):
+    # a stale publish.json{published} + a crashed publish (rc!=0) must be FAILED, never pushed
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    d = root/"runs"/"2026-07-01"; d.mkdir(parents=True, exist_ok=True)
+    (d/"publish.json").write_text(json.dumps({"date":"2026-07-01","status":"published"}))  # stale from prior run
+    pushes = _spy_push(monkeypatch)
+    m = orchestrate.run("2026-07-01", runner=_fake_runner_factory(root, outcomes={"publish":"rc1"}), now=_fixed_now())
+    assert m["status"]=="failed" and m["stages"]["publish"]["status"]=="failed" and pushes["n"]==0
+
+def test_run_aborts_on_stage_failure(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    m = orchestrate.run("2026-07-01", runner=_fake_runner_factory(root, outcomes={"select":"rc1"}), now=_fixed_now())
+    assert m["status"]=="failed" and m["stages"]["select"]["status"]=="failed"
+    assert m["stages"]["stage"]["status"]=="skipped"   # never ran
+
+def test_run_skips_when_already_pushed(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    orchestrate.run("2026-07-01", runner=_fake_runner_factory(root, outcomes={}), now=_fixed_now())  # publishes+pushes
+    called = {"n":0}
+    def spy(name, date): called["n"]+=1; return 0
+    m = orchestrate.run("2026-07-01", runner=spy, now=_fixed_now())
+    assert m["status"]=="skipped" and called["n"]==0   # no stage ran
+
+def test_run_pushonly_recovers_without_regen(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    # simulate published-locally-but-not-pushed: commit news, publish.json pushed=false, origin empty
+    _publish_news(root, "2026-07-01", pushed=False)
+    called = {"n":0}
+    def spy(name, date): called["n"]+=1; return 0
+    m = orchestrate.run("2026-07-01", runner=spy, now=_fixed_now())
+    assert m["status"]=="published" and called["n"]==0   # push-only, no regeneration
+    assert json.loads((root/"runs"/"2026-07-01"/"publish.json").read_text())["pushed"] is True
+
+def test_run_no_push_flag(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    pushes = _spy_push(monkeypatch)
+    m = orchestrate.run("2026-07-01", runner=_fake_runner_factory(root, outcomes={}), no_push=True, now=_fixed_now())
+    assert m["status"]=="published" and m["stages"]["push"]["status"]=="skipped" and pushes["n"]==0
+    assert json.loads((root/"runs"/"2026-07-01"/"publish.json").read_text()).get("pushed") is None
+
+def test_run_rejects_bad_date(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    m = orchestrate.run("../evil", now=_fixed_now())
+    assert m["status"]=="failed" and not (tmp_path/"evil").exists()

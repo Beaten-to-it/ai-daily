@@ -1,7 +1,9 @@
 import fcntl
-import subprocess, json, os, tempfile
+import subprocess, json, os, tempfile, re
 from contextlib import contextmanager
+from datetime import datetime
 from .config import ROOT, run_dir
+from . import config
 
 class Busy(Exception):
     pass
@@ -108,3 +110,72 @@ def _push(date):
         return "push_pending", None, "push reported success but origin/main did not advance"
     _mark_pushed(date, head)
     return "published", head, ""
+
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_STATUS_EXIT = {"published":0,"skipped":0,"held":1,"failed":1,
+                "push_rejected":1,"push_pending":2,"busy":3}
+
+def _blank_stages():
+    return {s: {"status": "skipped", "reason": ""} for s in STAGES + ["push"]}
+
+def _write_run(date, payload):
+    (run_dir(date)).mkdir(parents=True, exist_ok=True)
+    (run_dir(date)/"run.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
+
+def run(date, *, force=False, no_push=False, runner=None, now=None):
+    runner = runner or _default_runner
+    now = now or datetime.now(config.KST)
+    run_id = now.strftime("%Y%m%dT%H%M%S%z")
+    started = now.isoformat()
+    base = {"date": date, "run_id": run_id, "started_at": started,
+            "status": "failed", "stages": _blank_stages(), "reason": "", "force": force}
+    if not _DATE.fullmatch(date or ""):
+        base["status"] = "failed"; base["reason"] = "invalid date (must be YYYY-MM-DD)"
+        return base   # do NOT write run.json under an unvalidated path
+    def finish(status, reason=""):
+        base["status"] = status; base["reason"] = reason
+        return _write_run(date, base)
+    try:
+        with _lock():
+            action = decide_action(date, force=force)
+            if action == "skip":
+                return finish("skipped", "already published and pushed")
+            if action == "push_only":
+                st, sha, reason = _push(date)
+                base["stages"]["push"] = {"status": st, "reason": reason or "push-only recovery"}
+                top = "re-pushed without regeneration" if st == "published" else f"push-only recovery failed: {reason}"
+                return finish("published" if st == "published" else st, top)
+            # action == "full"
+            for name in STAGES:
+                rc = runner(name, date)
+                if name == "publish":
+                    # publish exits 0 even for held/failed — but a CRASHED publish (rc!=0) must
+                    # NOT be read as a stale prior publish.json{published}. Gate on rc+artifact first.
+                    ok, reason = _stage_ok("publish", date, rc)
+                    if not ok:
+                        base["stages"]["publish"] = {"status": "failed", "reason": reason}
+                        return finish("failed", f"publish: {reason}")
+                    pj = _publish_state(date) or {}
+                    pstatus = pj.get("status")
+                    if pstatus not in ("published", "held", "failed"):
+                        base["stages"]["publish"] = {"status": "failed", "reason": f"unknown publish status {pstatus!r}"}
+                        return finish("failed", f"unknown publish status {pstatus!r}")
+                    preason = pj.get("reason", "")   # publish.py records the held/failed cause here
+                    base["stages"]["publish"] = {"status": pstatus, "reason": preason}
+                    if pstatus != "published":
+                        return finish(pstatus, preason or f"publish {pstatus}")   # held/failed -> no push
+                    break
+                ok, reason = _stage_ok(name, date, rc)
+                base["stages"][name] = {"status": "ok" if ok else "failed", "reason": reason}
+                if not ok:
+                    return finish("failed", f"{name}: {reason}")
+            if no_push:
+                base["stages"]["push"] = {"status": "skipped", "reason": "--no-push"}
+                return finish("published", "published (push skipped)")
+            st, sha, reason = _push(date)
+            base["stages"]["push"] = {"status": st, "reason": reason}
+            return finish("published" if st == "published" else st, reason)
+    except Busy:
+        base["status"] = "busy"; base["reason"] = "another run in progress"
+        return base   # do not clobber the other run's run.json
