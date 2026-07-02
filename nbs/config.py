@@ -1,6 +1,7 @@
 from datetime import timezone, timedelta
 from pathlib import Path
 KST = timezone(timedelta(hours=9))
+SITE_BASEURL = "https://beaten-to-it.github.io/ai-daily/"  # single source; == hugo.toml baseURL
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 LEDGER_PATH = DATA_DIR / "published.csv"
