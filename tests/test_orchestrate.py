@@ -60,3 +60,37 @@ def test_decide_action_pushonly_when_scratch_wiped(tmp_path, monkeypatch):
 def test_decide_action_force_is_always_full(tmp_path, monkeypatch):
     root=_init_repo(tmp_path, monkeypatch); _publish_news(root, "2026-07-01", pushed=True)
     assert orchestrate.decide_action("2026-07-01", force=True) == "full"
+
+def _mk(root, date, name, payload):
+    d = root/"runs"/date; d.mkdir(parents=True, exist_ok=True)
+    (d/f"{ {'collect':'candidates','select':'selection','stage':'generation','publish':'publish'}[name] }.json"
+     ).write_text(json.dumps(payload), encoding="utf-8")
+
+def test_stage_ok_rejects_nonzero_rc(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    ok, _ = orchestrate._stage_ok("collect", "2026-07-01", 1)
+    assert ok is False
+
+def test_stage_ok_collect_needs_artifact(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    ok, _ = orchestrate._stage_ok("collect", "2026-07-01", 0)   # rc0 but no candidates.json
+    assert ok is False
+    _mk(root, "2026-07-01", "collect", [])
+    assert orchestrate._stage_ok("collect", "2026-07-01", 0)[0] is True   # empty list is OK
+
+def test_stage_ok_stage_status(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    _mk(root, "2026-07-01", "stage", {"date":"2026-07-01","status":"skip-empty"})
+    assert orchestrate._stage_ok("stage", "2026-07-01", 0)[0] is True
+    _mk(root, "2026-07-01", "stage", {"date":"2026-07-01","status":"weird"})
+    assert orchestrate._stage_ok("stage", "2026-07-01", 0)[0] is False
+
+def test_default_runner_shape(monkeypatch):
+    calls = {}
+    def fake_run(argv, cwd=None, **kw):
+        calls["argv"]=argv; calls["cwd"]=cwd
+        class R: returncode=0
+        return R()
+    monkeypatch.setattr(orchestrate.subprocess, "run", fake_run)
+    rc = orchestrate._default_runner("collect", "2026-07-01")
+    assert rc==0 and calls["argv"]==["python3","-m","nbs.collect","--date","2026-07-01"]
