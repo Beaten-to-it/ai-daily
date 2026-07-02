@@ -65,6 +65,34 @@ def test_stage_skips_when_zero_items(rundir):
     out=stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=lambda r,d:"x")
     assert out["status"]=="skip-empty"
 
+def _gen_respecting_exclude(items, fetched_map, date, **kw):
+    out=[]
+    for it in items:
+        ek=it["event_key"]; fr=fetched_map[ek]
+        st="excluded" if fr.evidence_level=="exclude" else "ok"
+        r=GenerationResult(event_key=ek, title=it["title"], url=it["url"], source="S",
+            source_type="article", evidence_level=fr.evidence_level, status=st,
+            post_path=(None if st!="ok" else f"posts/{date}-{ek}.md"),
+            slug=f"{date}-{ek}", rank=it["rank"], rationale="r")
+        if st=="ok": r._md=f"---\ntitle: {it['title']}\n---\nbody\n"
+        out.append(r)
+    return out
+
+def test_stage_rejects_unsafe_event_key(rundir):
+    # event_key with a path separator must be ISOLATED (excluded), never slugified/crash.
+    date="2026-07-07"; d=rundir(date); d.mkdir(parents=True, exist_ok=True)
+    def _it(ek,r): return {"event_key":ek,"title":"T","url":f"https://x/{r}","source":"S",
+        "source_type":"article","evidence_type":"article","dedup":"new",
+        "prior_post_path":None,"rank":r,"rationale":"r"}
+    items=[_it("good-1",1), _it("../evil",2)]
+    (d/"selection.json").write_text(json.dumps({"date":date,"items":items,
+        "selected_count":2,"skipped_count":0,"generated_with":"test"}), encoding="utf-8")
+    out=stage.run(date, fetch=_fake_fetch, generate=_gen_respecting_exclude, usecase=lambda r,d:"x")
+    status={r["event_key"]:r["status"] for r in out["results"]}
+    assert status["good-1"]=="ok" and status["../evil"]=="excluded"   # both present, unsafe isolated
+    assert not any("evil" in p.name for p in d.rglob("*") if p.is_file())  # no path-escape write
+    assert (d/"generation.json").exists()                            # run did not crash
+
 def test_stage_usecase_failure_is_isolated(rundir):
     # §5: a usecase claude -p failure must NOT abort the run — manifest + posts + news survive
     date="2026-07-06"; _write_selection(rundir, date, 3)

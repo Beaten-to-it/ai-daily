@@ -89,9 +89,6 @@ def _gen_one(item, fetched, date, render, timeout, retries):
             r = GenerationResult(status="ok", post_path=f"posts/{slug}.md", **base)
             r._md = md            # carried for staging; not serialized by to_dict()
             return r
-        except subprocess.TimeoutExpired:
-            last = f"timed out after {timeout}s"
-            break                 # retrying a timeout just burns another full timeout
         except Exception as e:
             last = str(e)[:200]
     return GenerationResult(status="failed", post_path=None, error=last, **base)

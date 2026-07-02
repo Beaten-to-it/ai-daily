@@ -43,6 +43,20 @@ def test_article_caps_evidence_size(monkeypatch):
     text, via, ok = fetch.fetch_article("https://x.test/a")
     assert len(text) == fetch.MAX_EVIDENCE_CHARS
 
+def test_fetch_item_rejects_non_http_scheme():
+    # §10: file:// / ftp:// would read the local FS into evidence — reject at dispatch
+    r = fetch.fetch_item({"event_key":"k","url":"file:///etc/passwd","source_type":"article"})
+    assert r.evidence_level=="exclude" and r.fetch_ok is False and r.via=="bad-scheme" and r.text==""
+
+def test_article_style_heavy_shell_falls_to_jina(monkeypatch):
+    # gate must strip <style> (not count CSS as content): a CSS-heavy shell whose real
+    # visible text is tiny should fall through to jina, not be accepted via http.
+    shell = "<html><head><style>" + ".c{color:red;padding:1px} "*300 + "</style></head><body><nav>Home About</nav></body></html>"
+    monkeypatch.setattr(fetch, "_http_get", lambda u, timeout=20: (shell, True))
+    monkeypatch.setattr(fetch, "_jina", lambda u, timeout=30: "실제 기사 본문 "*200)
+    text, via, ok = fetch.fetch_article("https://x.test/a")
+    assert via=="jina" and ok and "실제 기사" in text
+
 def test_article_falls_back_to_jina_when_http_thin(monkeypatch):
     monkeypatch.setattr(fetch, "_http_get", lambda u, timeout=20: ("<div id=root></div>", True))
     monkeypatch.setattr(fetch, "_jina", lambda u, timeout=30: "F"*1500)

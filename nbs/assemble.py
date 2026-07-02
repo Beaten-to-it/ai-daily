@@ -48,7 +48,14 @@ def build_usecase(results, date, *, run=None):
     if run is None:
         from .generate import run_claude_notools as run
     from .generate import _strip_fences
+    from .models import parse_frontmatter
     md = _strip_fences(run(build_usecase_prompt(results, date)))  # same fence-strip as render_blog
-    if not md.startswith("---"):
-        raise ValueError("usecase output missing front matter")
+    end = md.find("---", md.find("---") + 3)
+    if not md.startswith("---") or end == -1:
+        raise ValueError("usecase output missing/unterminated front matter")
+    missing = {"title", "date", "tags"} - set(parse_frontmatter(md))
+    if missing:
+        raise ValueError(f"usecase front matter missing: {sorted(missing)}")
+    if not md[end+3:].strip():
+        raise ValueError("usecase output has empty body")
     return md

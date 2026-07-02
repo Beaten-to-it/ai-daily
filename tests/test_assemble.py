@@ -48,3 +48,15 @@ def test_usecase_strips_code_fences():
     fenced="```markdown\n---\ntitle: U\ndate: 2026-07-01\ntags: [usecase]\n---\nbody\n```\n"
     out=assemble.build_usecase([_ok_with_md("a")], "2026-07-01", run=lambda t, timeout=180: fenced)
     assert out.startswith("---") and "```" not in out
+
+def test_usecase_rejects_empty_body():
+    import pytest
+    with pytest.raises(ValueError):
+        assemble.build_usecase([_ok_with_md("a")], "2026-07-01",
+            run=lambda t, timeout=180: "---\ntitle: U\ndate: 2026-07-01\ntags: [x]\n---\n   \n")
+
+def test_usecase_rejects_missing_required_field():
+    import pytest
+    with pytest.raises(ValueError):
+        assemble.build_usecase([_ok_with_md("a")], "2026-07-01",
+            run=lambda t, timeout=180: "---\ntitle: U\n---\nbody\n")   # no date/tags

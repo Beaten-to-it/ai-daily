@@ -11,18 +11,16 @@ PAYWALL_MARKERS = (
     "구독자 전용", "회원 전용", "로그인이 필요",
 )
 
-def _visible_len(text: str) -> int:
-    # strip tags + collapse whitespace so an HTML shell scores ~0 (gate only)
-    t = re.sub(r"<script[\s\S]*?</script>", " ", text, flags=re.I)
-    t = re.sub(r"<[^>]+>", " ", t)
-    return len(re.sub(r"\s+", " ", t).strip())
-
 def _visible_text(html: str) -> str:
-    # return-path extraction: drop script+style bodies + all tags so the evidence
-    # fed to claude -p is readable text, not raw HTML/JSON/CSS (else prompt blows up)
+    # drop script+style BODIES + all tags so what we keep is readable text, not raw
+    # HTML/JSON/CSS. The gate (_visible_len) and the return path share this so a
+    # style-heavy JS shell can't pass the length gate on CSS then return thin text.
     t = re.sub(r"<(script|style)[\s\S]*?</\1>", " ", html, flags=re.I)
     t = re.sub(r"<[^>]+>", " ", t)
     return re.sub(r"\s+", " ", t).strip()
+
+def _visible_len(text: str) -> int:
+    return len(_visible_text(text))
 
 def classify_evidence(source_type, text, *, paywall_marker=False, fetch_ok=True):
     if not fetch_ok or not text or not text.strip():
@@ -44,6 +42,7 @@ def classify_evidence(source_type, text, *, paywall_marker=False, fetch_ok=True)
     return "confirmed" if n >= MIN_ARTICLE_CHARS else "short"
 
 import json, subprocess, tempfile, os, glob, urllib.request
+from urllib.parse import urlsplit
 from .models import FetchResult
 
 _UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 nbs-daily/0.1"
@@ -185,7 +184,14 @@ _FETCHERS = {"article": lambda it: fetch_article(it["url"]),
 
 def fetch_item(item):
     st = item.get("source_type", "article")
+    url = item.get("url", "")
+    # §10 trust boundary: only http(s). file://, ftp:// etc. would let a hostile feed
+    # URL read the local FS (urllib/libcurl/yt-dlp all honor them) into published
+    # evidence. Guard once at dispatch — covers every backend. (_jina fetches server-side.)
+    if urlsplit(url).scheme not in ("http", "https"):
+        return FetchResult(event_key=item.get("event_key",""), url=url, source_type=st,
+                           text="", evidence_level="exclude", via="bad-scheme", fetch_ok=False)
     text, via, ok = _FETCHERS.get(st, _FETCHERS["article"])(item)
     level = classify_evidence(st, text, paywall_marker=_has_paywall(text), fetch_ok=ok)
-    return FetchResult(event_key=item.get("event_key",""), url=item.get("url",""),
+    return FetchResult(event_key=item.get("event_key",""), url=url,
                        source_type=st, text=text, evidence_level=level, via=via, fetch_ok=ok)

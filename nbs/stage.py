@@ -1,8 +1,11 @@
-import argparse, json, shutil
+import argparse, json, re, shutil
 from .config import run_dir
 from . import fetch as fetch_mod
 from . import generate as gen_mod
 from . import assemble as asm
+from .models import FetchResult
+
+_EVENT_KEY_RE = re.compile(r"^[a-z0-9-]+$")
 
 def run(date, *, fetch=None, generate=None, usecase=None):
     fetch = fetch or fetch_mod.fetch_item
@@ -26,9 +29,22 @@ def run(date, *, fetch=None, generate=None, usecase=None):
     fetched_map = {}
     (d/"fetched").mkdir(parents=True, exist_ok=True)
     for it in items:
-        fr = fetch(it)
-        fetched_map[it["event_key"]] = fr
-        (d/"fetched"/f"{it['event_key']}.txt").write_text(fr.text or "", encoding="utf-8")
+        ek = it.get("event_key", "")
+        st = it.get("source_type", "article")
+        # event_key is LLM output and becomes a fetched filename + post slug/path. REJECT
+        # (don't coerce) anything outside the slug charset: slugifying could map two
+        # distinct keys onto one path -> silent overwrite. Isolate as excluded, no writes.
+        if not _EVENT_KEY_RE.match(ek):
+            fetched_map[ek] = FetchResult(event_key=ek, url=it.get("url",""), source_type=st,
+                text="", evidence_level="exclude", via="invalid-key", fetch_ok=False)
+            continue
+        try:                                     # §5: one item's fetch failure must not abort the run
+            fr = fetch(it)
+            (d/"fetched"/f"{ek}.txt").write_text(fr.text or "", encoding="utf-8")
+        except Exception:
+            fr = FetchResult(event_key=ek, url=it.get("url",""), source_type=st,
+                text="", evidence_level="exclude", via="fetch-error", fetch_ok=False)
+        fetched_map[ek] = fr
 
     results = generate(items, fetched_map, date)
 
