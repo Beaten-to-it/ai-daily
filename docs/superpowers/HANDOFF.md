@@ -1,6 +1,6 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-02 (P2b DONE·머지. **P2c = 구현완료·머지대기**: 12태스크 TDD 전부 그린, unit 31 + 전체 111 passed, 실스모크 published). `/clear` 후 새 세션은 §2.6(P2c 완료기록)을 읽고, 남은 게이트(Codex xhigh 적대리뷰 → 머지)부터 이어간다.
+> 마지막 갱신: 2026-07-02 (P2b DONE·머지. **P2c = 구현완료·리뷰통과·머지대기**: 12태스크 TDD, 전체 117 passed, 실스모크 published, **적대리뷰 2R(advisor+Codex xhigh) 통과**). `/clear` 후 새 세션은 §2.6(P2c 완료기록)을 읽고 finishing-a-development-branch(머지)부터 이어간다.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
@@ -15,7 +15,7 @@
 | P1 | Hugo(PaperMod) 사이트 골격 + GitHub Actions Pages 배포 | ✅ DONE (라이브, 샘플글) |
 | P2a | 수집(RSS+X+Reddit) → claude -p 내용 중복판정·선별 → `selection.json` | ✅ DONE (merged, 20 tests) |
 | P2b | 전문 fetch(grounding 게이트) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | ✅ **DONE (merged, 80 tests)**. 적대리뷰 2R(Codex+Opus) 통과. 상세 §2.5 |
-| P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | ✅ **구현완료·머지대기** (12태스크 TDD, unit 31 + 전체 111 passed, 실스모크 published). §2.6 |
+| P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | ✅ **구현완료·리뷰통과·머지대기** (12태스크 TDD, 전체 117 passed, 실스모크 published, 적대리뷰 2R 통과). §2.6 |
 | P3 | 자동화(스케줄러·preflight·catchup) + 이메일(idempotent) + 관측성/알림 + Reddit용 Chrome 기동 | 대기 |
 
 ## 2.5 P2b 완료 기록 (DONE — 참고용)
@@ -44,8 +44,12 @@
 - **검증:** `python3 -m pytest -q` = **111 passed**(P2b 80 + P2c 31). 
 - **실스모크 (Claude env, 2026-07-02):** publish.run → `[published] promoted=6 degraded={}`, 실 hugo 빌드 통과(build_verify 무에러=렌더+subpath href 확인), content posts×4+news+usecase 승격, ledger 4행 전부 summary 비지않음(257~340자)+tags. 스모크 후 tree clean(git clean).
   - ⚠️ **스모크 접근 편차 (의도적, advisor 승인):** plan Task12는 `nbs.stage --date`로 staging 전체 재생성(=live fetch + claude -p 재호출)을 명시하나, 그건 비결정적(죽은 URL·LLM 출력변동→floor 결과가 바뀌어 P2c와 무관하게 스모크 실패 가능)이라, P2b가 이미 검증한 staging을 재사용하고 **news 인덱스만 결정적으로 재빌드**(`build_news_index`로 relref화, LLM 0)한 뒤 `publish --no-commit` 실행. 스모크의 고유가치(실 hugo + 실 git/fs promote + 실 ledger)는 그대로 커버. `scripts/p2c_smoke.sh`는 fresh-day용 full 파이프라인 형태로 커밋됨.
+- **적대리뷰 2R 통과 (게이트 완료):** advisor✅ + Codex xhigh R1·R2. 확정 findings 전부 fix:
+  - R1 **BLOCK** slug이 generation.json→fs/git 경로로 무검증 유입(traversal) → completeness 게이트에 `_SLUG_RE.fullmatch` reject(promote/rollback 전). R1 **MAJOR** `rewrite_date`가 옛 날짜 재실행 시 행 재정렬→spurious commit → `(date,event_key)` 정렬로 순서 불변. (자체발견: `match`+`$`가 `evil\n` 통과 → `fullmatch`.)
+  - R2 **BLOCK** `gen["date"]`/date 인자도 경로성분 → `../_index` traversal → `_DATE_RE` 엄격검증 + `gen["date"]==arg` 핀. R2 **MAJOR** charset-safe 타 날짜 slug(예 `2026-06-30-sample`)가 date-scope 탈출 → completeness에서 `slug==f"{date}-{ek}"` 강제. (R2가 R1 fix 정확성 확인.)
+  - 커밋 ac5bbce→b2c83c3. 회귀 부정검증 완료(정렬 fix 제거 시 옛날짜 재실행 테스트 실패 재현).
 - **deferred 미해결 (defer-safe):** ① `parse_frontmatter`/`parse_frontmatter_strict` 미앵커 `---` 분할(값에 `---`면 오분할, 우리 포맷엔 없음). ② ledger `entities`/`confidence` 필드 빈값(YAGNI, ledger_digest 무시). ③ 실스모크는 article-only(P2b 커버리지와 동일; paper/sns/video 승격은 단위테스트만).
-- **남은 게이트(머지 전):** advisor 적대리뷰 통과✅ / **Codex xhigh 적대리뷰 미실시** → 실행 후 finishing-a-development-branch로 머지. push는 P3(수동/자동 배포).
+- **남은 것:** finishing-a-development-branch로 머지. push는 P3(수동/자동 배포).
 
 <details><summary>(이전) 재개점 — 계획완료·구현대기 시점 기록</summary>
 
