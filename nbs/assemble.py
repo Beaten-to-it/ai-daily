@@ -22,7 +22,8 @@ def build_news_index(results, date):
         lines.append("")
         for r in rs:
             hook = (r.rationale or "").strip() or r.title
-            lines.append(f"- [{r.title}](/posts/{r.slug}/) — {hook}")
+            link = '{{< relref "/posts/%s.md" >}}' % r.slug   # subpath-safe (baseURL=/ai-daily/)
+            lines.append(f"- [{r.title}]({link}) — {hook}")
         lines.append("")
     return "\n".join(lines) + "\n"
 

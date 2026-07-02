@@ -73,3 +73,8 @@ def test_floor_counts_evidence_not_generation_success():
 def test_floor_fails_when_evidence_below_n():
     res = [_rev("a","confirmed","ok"), _rev("b","short","ok"), _rev("c","exclude","excluded")]
     assert assemble.floor_ok(res) is False
+
+def test_news_index_uses_relref_not_root_relative():
+    md = assemble.build_news_index([_r("a", rank=1), _r("c", rank=2), _r("d", rank=3)], "2026-07-01")
+    assert '{{< relref "/posts/2026-07-01-a.md" >}}' in md
+    assert "](/posts/" not in md   # no root-relative link (404s under /ai-daily/)
