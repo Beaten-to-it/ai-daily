@@ -60,6 +60,18 @@ def _default_runner(name, date):
     return subprocess.run(["python3", "-m", f"nbs.{name}", "--date", date],
                           cwd=str(ROOT)).returncode
 
+def _default_email_runner(date, run_id):
+    try:
+        p = subprocess.run(["python3", "-m", "nbs.email", "--date", date, "--run-id", run_id],
+                           cwd=str(ROOT), capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:            # never hang the run (and the flock) on a stuck send
+        return 1, {"status": "error", "reason": "email timed out (120s)"}
+    try:
+        res = json.loads(p.stdout.strip().splitlines()[-1]) if p.stdout.strip() else {}
+    except (ValueError, IndexError):
+        res = {"status": "error", "reason": "unparseable email output"}
+    return p.returncode, res
+
 def _stage_ok(name, date, rc):
     if rc != 0:
         return False, f"{name} exited {rc}"
@@ -123,7 +135,7 @@ _STATUS_EXIT = {"published":0,"skipped":0,"held":1,"failed":1,
                 "push_rejected":1,"push_pending":2,"busy":3}
 
 def _blank_stages():
-    return {s: {"status": "skipped", "reason": ""} for s in STAGES + ["push"]}
+    return {s: {"status": "skipped", "reason": ""} for s in STAGES + ["push", "email"]}
 
 def _write_run(date, payload):
     d = run_dir(date); d.mkdir(parents=True, exist_ok=True)
@@ -137,8 +149,9 @@ def _write_run(date, payload):
         os.path.exists(tmp) and os.remove(tmp); raise
     return payload
 
-def run(date, *, force=False, no_push=False, runner=None, now=None):
+def run(date, *, force=False, no_push=False, runner=None, now=None, email_runner=None):
     runner = runner or _default_runner
+    email_runner = email_runner or _default_email_runner
     now = now or datetime.now(config.KST)
     run_id = now.strftime("%Y%m%dT%H%M%S%z")
     started = now.isoformat()
@@ -149,7 +162,19 @@ def run(date, *, force=False, no_push=False, runner=None, now=None):
         return base   # do NOT write run.json under an unvalidated path
     def finish(status, reason=""):
         base["status"] = status; base["reason"] = reason
-        return _write_run(date, base)
+        _write_run(date, base)                          # persist publish+push BEFORE the network email
+        # email only when the day is genuinely published to origin AND this is not a dry-run.
+        if status in ("published", "skipped") and not no_push:
+            try:
+                rc, res = email_runner(date, run_id)
+                # a failed email is a P3d ALERT — normalize rc!=0 to "failed" (§12/§15).
+                estatus = "failed" if rc != 0 else res.get("status", "failed")
+                est = {"status": estatus, "reason": res.get("reason", "")}
+            except Exception as e:                      # seam/subprocess failure must not crash the run
+                est = {"status": "failed", "reason": str(e)}
+            base["stages"]["email"] = est
+            _write_run(date, base)                      # best-effort re-write with the email stage
+        return base
     try:
         with _lock():
             action = decide_action(date, force=force)
