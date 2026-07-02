@@ -174,6 +174,18 @@
 - **degraded 확장**(R2-P3): `ok_count < evidence_count`(일부 생성 실패) 또는 `ok_count < FLOOR_N`이면 `publish.json.degraded.generation_failed_count` 기록 + 알림(부분 생성장애가 조용히 발행되지 않게).
 - 모듈: 신규 `nbs/publish.py`(오케스트레이션). `ledger.py`에 날짜단위 재작성 헬퍼 추가. 수정 `assemble.build_news_index`(relref)·`floor_ok`(evidence)·`validate_blog_output`(TL;DR). 재사용 `models.py`(canonicalize_url/parse_frontmatter/엄격파서)/`config.py`.
 
+**확정 (P3a, 2026-07-02 — Orchestrator + Push & Deploy):**
+> P3 = 4개 독립 서브프로젝트로 분해(각자 spec→plan→구현): **P3a 오케스트레이터+push**(백본) → P3b 이메일 → P3c 스케줄러+preflight+catchup+Reddit Chrome → P3d 관측성/알림. P3a는 §7 "로컬 생성 + Actions 배포"의 실행 드라이버 + §8 push를 구현한다.
+- **범위 = 하루치 파이프라인 단일 명령 + push까지.** collect→select→stage→publish(P2c, 로컬 commit)→**`git push origin main`**→Actions→Pages 배포. 이메일·스케줄러·알림·Chrome은 후속 서브(범위 밖).
+- **아키텍처 = 서브프로세스 체이닝.** 신규 `nbs/orchestrate.py`가 각 스테이지를 `python3 -m nbs.{collect,select,stage,publish} --date <date>`로 호출, **exit코드 + 스테이지 아티팩트 JSON**으로 상태 판정. 기존 스테이지 코드 **수정 0**(격리·재사용). `orchestrate.run(date, *, force=False) -> dict`(run.json) + `main()`/`__main__`: `--date`(기본 **오늘 KST**, config.KST), `--force`.
+- **날단위 멱등 스킵 가드:** `--force` 아니면 시작 시 "이미 배포됨" 판정 → 맞으면 no-op(`status=skipped`, exit 0). ① 1차 = `runs/<date>/publish.json` 존재 & `status==published` & `pushed==true`. ② 2차 폴백(gitignore scratch 삭제 대비) = `git cat-file -e HEAD:content/news/<date>.md`(로컬 커밋됨) & `git merge-base --is-ancestor HEAD origin/main`(로컬 ref 기준 휴리스틱, fetch 없음). 1차 우선.
+  - 근거: 스테이지는 매번 전체 재실행(부분 resume 없음). `claude -p`는 비결정적이라 이미-발행 날 재생성 시 새 에디션이 되므로, **재생성 방지 = 날단위 스킵 가드**로만 막는다(스테이지 내부는 재실행). `--force`가 유일한 강제 재발행 경로.
+- **파이프라인 실패 의미(순서 고정, fail-fast):** collect rc≠0 / select abort(rc≠0) / stage rc≠0 = **즉시 중단·failed**(다음 스테이지 실행 안 함). 빈 수집·0선별은 크래시 아님 → stage `skip-empty` → publish가 floor로 **held**. publish `status`: published→push 진행; **held/failed→push 안 함**, 최종 held/failed. 각 스테이지 성공은 exit0 **AND** 아티팩트 JSON 상태로 이중 확인.
+- **Push + 배포 마커:** published일 때만 `git push origin main`(자격 `~/.git-credentials`, 무인). push 성공 후 **검증**(`git rev-parse origin/main == HEAD`) → `runs/<date>/publish.json`에 `pushed=true`+`deployed_sha` **원자적 기록**(temp+replace). push rc≠0 → `pushed` false 유지 → 다음 실행/catchup 재시도. **push 실패는 발행(로컬 commit)을 롤백하지 않음**(commit은 이미 성공; 재push만 필요).
+- **run.json 매니페스트(§12 관측성):** `runs/<date>/run.json` = `{date, status(published|held|failed|skipped), stages:{collect,select,stage,publish,push:{status,reason}}, reason, force}`. P3d가 읽음. exit코드: published/skipped=**0**, held/failed=**비0**(P3c 스케줄러 감지). **P3a는 이메일/알림 직접 안 보냄**(관심사 분리 — P3b/P3d).
+- **테스트:** `tests/test_orchestrate.py` — 스테이지 러너를 seam(주입 가능 runner/monkeypatch)으로 stub해 실 `claude -p`/`hugo` 없이: 정상 published→push, held→no-push, 스테이지 rc≠0→중단, 이미-발행 스킵, `--force` 재실행, push rc≠0→pushed=false. 실 스모크(Claude env) 1회는 `--no-push` 드라이런(또는 테스트 remote)으로 collect→publish 체인 확인.
+- **범위 밖(후속 서브 명시):** Gmail 발송(P3b) · systemd timer·preflight 체크·catchup 재시도·Reddit Chrome 무인기동(P3c) · 실패/누락/인증만료 이메일 알림·일일 메트릭(P3d).
+
 **미결 (후속 단계):**
 - News 카테고리 라벨 최종안.
 - 이메일 추가 수신자.
