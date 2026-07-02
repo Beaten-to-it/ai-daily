@@ -169,8 +169,10 @@
 - **ledger 필드**: `summary`=**Blog `## TL;DR` 추출**(파싱 실패 시 폴백=rationale/첫 문단; 빈 summary면 발행 실패 — 다음날 §6 dedup 보호), `canonical_key`=`canonicalize_url(url)`(P2a §6 dedup 키와 반드시 동일), `tags`=Blog front matter, 나머지=generation.json, `entities`/`confidence`=빈값(defer). **`validate_blog_output`가 publishable 글에 파싱가능한 `## TL;DR` 블록 요구**(short는 폴백 허용).
 - **빌드검증 = throwaway `hugo` 빌드 + 렌더 검증**(exit 코드만으론 불충분): 승격된 각 post/news/usecase의 `public/.../index.html` 존재 + news→post href가 `/ai-daily/posts/<slug>/` subpath 포함(smoke_build.sh 패턴). 파이프로 감싸지 않음.
 - **관측성(§12) = `runs/<date>/publish.json`**: `{date, status(published|held|failed), reason, promoted[], degraded(usecase 등), commit_sha, error}`. 보류·실패도 기록(재처리 판단용).
-- **git preflight**: identity 확인; 내용 동일 재실행의 "nothing to commit"은 성공 처리.
-- 모듈: 신규 `nbs/publish.py`(오케스트레이션). `ledger.py`에 날짜단위 재작성 헬퍼 추가. 수정 `assemble.build_news_index`(relref)·`floor_ok`(evidence)·`validate_blog_output`(TL;DR). 재사용 `models.py`(canonicalize_url/parse_frontmatter)/`config.py`.
+- **git preflight**: identity 확인; **write-set 경로(`content/posts/<date>*`, `content/news/<date>.md`, `content/usecase/<date>*`, `data/published.csv`)가 clean해야 시작 — dirty면 abort**(롤백의 `git checkout`이 사용자 미커밋 변경 파괴 방지, R2-P1). 내용 동일 재실행의 "nothing to commit"은 성공 처리.
+- **front matter 읽기(게이트·ledger)는 엄격 파서**(R2-P2): quoted scalar 정규화 + `tags`를 리스트로 파싱(`[]`·빈 리스트=빈값 취급). 현 `parse_frontmatter`(naive line-splitter, dict last-key-wins)를 그대로 게이트에 쓰지 않음. stdlib만(YAML 의존 회피) — 제약 파서 수 줄.
+- **degraded 확장**(R2-P3): `ok_count < evidence_count`(일부 생성 실패) 또는 `ok_count < FLOOR_N`이면 `publish.json.degraded.generation_failed_count` 기록 + 알림(부분 생성장애가 조용히 발행되지 않게).
+- 모듈: 신규 `nbs/publish.py`(오케스트레이션). `ledger.py`에 날짜단위 재작성 헬퍼 추가. 수정 `assemble.build_news_index`(relref)·`floor_ok`(evidence)·`validate_blog_output`(TL;DR). 재사용 `models.py`(canonicalize_url/parse_frontmatter/엄격파서)/`config.py`.
 
 **미결 (후속 단계):**
 - News 카테고리 라벨 최종안.
