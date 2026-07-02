@@ -93,6 +93,14 @@ def test_completeness_flags_news_link_mismatch(tmp_path):
     _write_news(staging,["2026-07-01-a"])
     assert any("news" in e.lower() for e in check_completeness(gen, staging))
 
+def test_completeness_rejects_unsafe_slugs(tmp_path):
+    # fullmatch charset guard: traversal, slash, trailing newline, uppercase, empty, underscore
+    for i, bad in enumerate(["../evil", "a/b", "evil\n", "UPPER", "", "under_score"]):
+        gen={"date":"2026-07-01","results":[{"event_key":"a","evidence_level":"confirmed",
+             "status":"ok","slug":bad,"url":"https://x/a","post_path":f"posts/{bad}.md",
+             "title":"T","source":"S"}]}
+        assert any("slug" in e for e in check_completeness(gen, tmp_path/f"s{i}")), f"not rejected: {bad!r}"
+
 import subprocess
 from nbs import publish, config
 

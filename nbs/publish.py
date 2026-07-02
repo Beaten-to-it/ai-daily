@@ -12,7 +12,9 @@ _RELREF = re.compile(r'relref\s+"/posts/([^"]+?)\.md"')
 # this charset, but P2c must not TRUST its input across the contract: a corrupt/hand-edited
 # slug like "../_index" would escape content/posts/ (promote writes it, rollback mis-handles
 # the non-normalized path). Reject at the completeness gate, before any write. (§10 boundary.)
-_SLUG_RE = re.compile(r"^[a-z0-9-]{1,120}$")
+# fullmatch (not match): `$` matches before a trailing newline, so `re.match` would accept
+# "evil\n"; fullmatch requires the WHOLE string to be in-charset.
+_SLUG_RE = re.compile(r"[a-z0-9-]{1,120}")
 
 def _body(md):
     end = md.find("---", md.find("---") + 3)   # skip front matter
@@ -50,7 +52,7 @@ def check_completeness(gen, staging):
     slugs, eks, canons = [], [], []
     for r in ok:
         slug = r.get("slug", "")
-        if not _SLUG_RE.match(slug):        # reject-and-isolate: unsafe slug never touches fs/git
+        if not _SLUG_RE.fullmatch(slug):    # reject-and-isolate: unsafe slug never touches fs/git
             errs.append(f"unsafe slug rejected: {slug!r}"); continue
         slugs.append(slug); eks.append(r.get("event_key")); canons.append(canonicalize_url(r.get("url", "")))
         if r.get("post_path") != f"posts/{slug}.md":
