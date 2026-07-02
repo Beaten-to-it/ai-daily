@@ -1,6 +1,6 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-02 (P2b DONE·머지. **P2c = 구현완료·리뷰통과·머지대기**: 12태스크 TDD, 전체 117 passed, 실스모크 published, **적대리뷰 2R(advisor+Codex xhigh) 통과**). `/clear` 후 새 세션은 §2.6(P2c 완료기록)을 읽고 finishing-a-development-branch(머지)부터 이어간다.
+> 마지막 갱신: 2026-07-02 (P2c DONE·머지. **P3a = 구현완료·리뷰통과·머지대기**: 오케스트레이터+push, 7태스크 TDD, 전체 142 passed, 적대리뷰 2R(advisor+Codex xhigh) 통과, 실체인 부분스모크). `/clear` 후 새 세션은 §2.7(P3a 완료기록)을 읽고 finishing-a-development-branch(머지)부터 이어간다.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
@@ -15,8 +15,11 @@
 | P1 | Hugo(PaperMod) 사이트 골격 + GitHub Actions Pages 배포 | ✅ DONE (라이브, 샘플글) |
 | P2a | 수집(RSS+X+Reddit) → claude -p 내용 중복판정·선별 → `selection.json` | ✅ DONE (merged, 20 tests) |
 | P2b | 전문 fetch(grounding 게이트) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | ✅ **DONE (merged, 80 tests)**. 적대리뷰 2R(Codex+Opus) 통과. 상세 §2.5 |
-| P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | ✅ **구현완료·리뷰통과·머지대기** (12태스크 TDD, 전체 117 passed, 실스모크 published, 적대리뷰 2R 통과). §2.6 |
-| P3 | 자동화(스케줄러·preflight·catchup) + 이메일(idempotent) + 관측성/알림 + Reddit용 Chrome 기동 | 대기 |
+| P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | ✅ **DONE·머지** (main, 117 tests, 적대리뷰 2R). §2.6 |
+| P3a | 오케스트레이터: collect→select→stage→publish→**push**→Actions배포. 날단위 멱등·crash-safe·no-email | ✅ **구현완료·리뷰통과·머지대기** (7태스크 TDD, 전체 142 passed, 적대리뷰 2R 통과). branch `p3a-orchestrate-publish`. §2.7 |
+| P3b | 이메일 발송(Gmail, News+UseCase, push 성공 후, idempotent) | 대기 (P3a 후) |
+| P3c | 스케줄러(systemd timer)·preflight·catchup·Reddit Chrome 무인기동 | 대기 (P3a 후) |
+| P3d | 관측성/알림(run.json 소비, 실패·누락·인증만료·floor미달 이메일, 일일 메트릭) | 대기 (P3b 후) |
 
 ## 2.5 P2b 완료 기록 (DONE — 참고용)
 
@@ -73,6 +76,15 @@
 **주의:** 실 스모크는 `claude -p` 호출(staging 재생성) → **Claude Code env 필수**([[2026-07-02-claude-p-fails-under-codex-exec]]). 빌드/검증은 파이프로 감싸지 말 것([[2026-07-01-pipe-hides-build-failure]]).
 
 </details>
+
+## 2.7 P3a 완료기록 (구현완료·리뷰통과·머지대기 — **여기부터**)
+
+**구현 완료 (2026-07-02, executing-plans 직접실행):** 신규 `nbs/orchestrate.py`(서브프로세스 체이닝 드라이버) + `tests/test_orchestrate.py`(25) + `scripts/p3a_smoke.sh`. 기존 스테이지 **수정 0**. 7태스크 TDD 커밋 b0c38d9→(T7). 전체 `pytest -q` = **142 passed**(P2c 117 + P3a 25).
+- **하는 일:** 하루치 단일명령 `collect→select→stage→publish(P2c)→git push origin main→Actions→Pages 배포`. `python3 -m nbs.orchestrate --date <YYYY-MM-DD>`(기본 오늘 KST) `[--force] [--no-push]`.
+- **확정 설계(스펙 §15 "확정 (P3a)"):** ①**날단위 멱등 가드**=`git cat-file HEAD:content/news/<date>.md`(git 권위, scratch 소실 견딤) 1차 → 있으면 `pushed==true`면 skip / 아니면 push-only 재시도(재생성 안 함=비결정 발산 방지), 없으면 full. `--force`만 강제 재발행. ②**crash-safe fd `flock`**(동시실행 방지). ③**스테이지별 성공기준**=exit0 AND 아티팩트 의미(stage는 floor-fail도 status:ok → publish 결과는 `publish.json.status`로 읽음; publish 서브프로세스는 held/failed여도 exit0). ④**push**=published일 때만, 성공검증(origin/main==HEAD) 후 publish.json에 `pushed`+`deployed_sha`. 실패는 `git ls-remote` 조상판정으로 `push_rejected`(발산·치명) vs `push_pending`(네트워크·재시도) — stderr 파싱 안 함. ⑤**run.json** `{date,run_id,started_at,status(published|skipped|held|failed|push_pending|push_rejected|busy),stages{},reason}` + exit코드. **이메일 안 보냄**(P3b/d).
+- **적대리뷰 2R 통과 (게이트):** 스펙 advisor+Codex 2R / plan advisor+Codex 2R. 확정 findings 전부 fix — R1 **BLOCK** publish rc 미검사+stale publish.json→push(=`_stage_ok(publish)` 선검사), R1 MAJOR ×5(_push reason 유실·remote-equal 오분류·테스트 remote가 worktree 안·divergence 방향 미판별·publish-rc1 테스트 부재), R2 MAJOR(_push 3튜플 언팩·push-only reason·publish held/failed reason 전파). plan `docs/superpowers/plans/2026-07-02-p3a-orchestrate-publish.md`.
+- **검증:** unit 25(실 git bare-remote로 push/classify/flock/멱등가드/publish-crash 가드 커버) + 전체 142 passed. **실체인 부분스모크:** `nbs.orchestrate`가 실 `nbs.collect` 서브프로세스를 구동해 candidates.json 28건 생성 확인(엔트리→lock→guard→runner→아티팩트 체인 실증). ⚠️ **편차(의도적):** 전체 라이브 생성(select+stage `claude -p` ~25분·비결정)은 orchestrate 통해 안 돌림 — P2c 실스모크 published가 publish 단 E2E를 이미 커버하고, 나머지 링크는 실 git 유닛으로 커버. 전체 라이브는 `bash scripts/p3a_smoke.sh <오늘>`(Claude env)로 필요시.
+- **남은 것:** finishing-a-development-branch로 머지. 이후 **P3b 이메일 → P3c 스케줄러+preflight+catchup+Chrome → P3d 관측성/알림**(각자 brainstorm→spec→plan→2R→구현). push=이 P3a가 하지만 자동 트리거(스케줄)는 P3c.
 
 ## 3. 문서 위치
 - 스펙(SSOT): `docs/superpowers/specs/2026-07-01-nbs-news-blog-design.md`
