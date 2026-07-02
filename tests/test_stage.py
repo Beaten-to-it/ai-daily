@@ -84,14 +84,16 @@ def test_stage_rejects_unsafe_event_key(rundir):
     def _it(ek,r): return {"event_key":ek,"title":"T","url":f"https://x/{r}","source":"S",
         "source_type":"article","evidence_type":"article","dedup":"new",
         "prior_post_path":None,"rank":r,"rationale":"r"}
-    items=[_it("good-1",1), _it("../evil",2)]
+    longkey="a"*200                                                  # charset-ok but > NAME_MAX slug
+    items=[_it("good-1",1), _it("../evil",2), _it(longkey,3)]
     (d/"selection.json").write_text(json.dumps({"date":date,"items":items,
-        "selected_count":2,"skipped_count":0,"generated_with":"test"}), encoding="utf-8")
+        "selected_count":3,"skipped_count":0,"generated_with":"test"}), encoding="utf-8")
     out=stage.run(date, fetch=_fake_fetch, generate=_gen_respecting_exclude, usecase=lambda r,d:"x")
     status={r["event_key"]:r["status"] for r in out["results"]}
-    assert status["good-1"]=="ok" and status["../evil"]=="excluded"   # both present, unsafe isolated
+    assert status["good-1"]=="ok"                                    # valid item unaffected
+    assert status["../evil"]=="excluded" and status[longkey]=="excluded"  # unsafe + overlong isolated
     assert not any("evil" in p.name for p in d.rglob("*") if p.is_file())  # no path-escape write
-    assert (d/"generation.json").exists()                            # run did not crash
+    assert (d/"generation.json").exists()                            # run did not crash before manifest
 
 def test_stage_usecase_failure_is_isolated(rundir):
     # §5: a usecase claude -p failure must NOT abort the run — manifest + posts + news survive

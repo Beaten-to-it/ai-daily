@@ -5,7 +5,7 @@ from . import generate as gen_mod
 from . import assemble as asm
 from .models import FetchResult
 
-_EVENT_KEY_RE = re.compile(r"^[a-z0-9-]+$")
+_EVENT_KEY_RE = re.compile(r"^[a-z0-9-]{1,100}$")   # bounded: slug goes in a filename (NAME_MAX 255)
 
 def run(date, *, fetch=None, generate=None, usecase=None):
     fetch = fetch or fetch_mod.fetch_item

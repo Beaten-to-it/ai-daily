@@ -51,6 +51,10 @@ def _http_get(url, timeout=20):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
         with urllib.request.urlopen(req, timeout=timeout) as r:
+            # §10: a redirect can land off-web (urllib allows ftp:// redirect targets);
+            # re-check the FINAL url's scheme so a redirect can't smuggle in a non-http read.
+            if urlsplit(r.geturl()).scheme not in ("http", "https"):
+                return "", False
             return r.read().decode("utf-8", "replace"), True
     except Exception:
         return "", False
@@ -64,7 +68,10 @@ def _curl_impersonate(url, timeout=30):
     try:
         from curl_cffi import requests as creq
         r = creq.get(url, impersonate="chrome", timeout=timeout)
-        return r.text if r.status_code == 200 else ""
+        # §10: libcurl follows redirects and supports file://; enforce the FINAL url is web.
+        if r.status_code == 200 and urlsplit(str(r.url)).scheme in ("http", "https"):
+            return r.text
+        return ""
     except Exception:
         return ""
 

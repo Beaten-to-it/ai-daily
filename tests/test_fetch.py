@@ -43,6 +43,17 @@ def test_article_caps_evidence_size(monkeypatch):
     text, via, ok = fetch.fetch_article("https://x.test/a")
     assert len(text) == fetch.MAX_EVIDENCE_CHARS
 
+def test_http_get_rejects_redirect_off_web(monkeypatch):
+    # §10: an http URL that redirects to file:// (final scheme off-web) must not be read
+    class FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def geturl(self): return "file:///etc/passwd"
+        def read(self): return b"root:x:0:0"
+    monkeypatch.setattr(fetch.urllib.request, "urlopen", lambda *a, **k: FakeResp())
+    text, ok = fetch._http_get("http://evil.test/redir")
+    assert text == "" and ok is False
+
 def test_fetch_item_rejects_non_http_scheme():
     # §10: file:// / ftp:// would read the local FS into evidence — reject at dispatch
     r = fetch.fetch_item({"event_key":"k","url":"file:///etc/passwd","source_type":"article"})

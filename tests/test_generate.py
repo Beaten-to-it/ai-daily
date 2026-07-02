@@ -10,6 +10,11 @@ _GOOD = ("---\ntitle: T\ndate: 2026-07-01\ntags: [ai]\nsource_url: https://x.tes
          "source_lang: en\nsource_type: article\nevidence_level: confirmed\n"
          "event_key: x-launch\n---\n본문.\n")
 
+def test_strip_fences_drops_preamble_before_frontmatter():
+    raw = "선택 확정: 2개. 완전한 사실만 사용.\n\n---\ntitle: T\n---\nbody\n"
+    out = generate._strip_fences(raw)
+    assert out.startswith("---") and "선택 확정" not in out and "body" in out
+
 def test_prompt_wraps_source_in_delimiters():
     p = generate.build_blog_prompt(_item(), _fetched(), "2026-07-01")
     assert "<<<SOURCE_BEGIN>>>" in p and "<<<SOURCE_END>>>" in p

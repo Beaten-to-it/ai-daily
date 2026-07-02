@@ -41,7 +41,13 @@ def run_claude_notools(text, timeout=GEN_TIMEOUT):
 
 def _strip_fences(raw):
     m = re.search(r"```(?:markdown)?\s*(---[\s\S]*)```", raw)
-    return (m.group(1) if m else raw).strip() + "\n"
+    body = m.group(1) if m else raw
+    # models often narrate before the doc ("선택 확정: ...\n\n---\ntitle:..."); drop any
+    # prose preamble before the first front-matter opener line so the doc starts at ---.
+    fm = re.search(r"(?m)^---\s*$", body)
+    if fm:
+        body = body[fm.start():]
+    return body.strip() + "\n"
 
 def _duplicate_frontmatter_keys(md):
     # parse_frontmatter is dict-based (last key wins); a duplicate key (fake+real) still
