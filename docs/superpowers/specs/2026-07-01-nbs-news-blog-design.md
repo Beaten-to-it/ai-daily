@@ -156,14 +156,21 @@
 - AI UseCase 산출 = **별도 claude -p 1회**, 그날 생성된 Blog 요약 기반 **하루 1~3편** 큐레이션(추가 fetch 없음, 일반 사용자 톤).
 - Hugo 테마 = PaperMod (P1). repo = ai-daily (P1).
 
-**확정 (P2c, 2026-07-02):**
-- **범위 = 로컬 commit까지.** staging→content 승격 · 완결성 검사 · Hugo 빌드검증 · ledger append · **단일 git commit(로컬)**. **push/라이브 배포는 수동 또는 P3**(무인 스케줄 포함) — P2c는 push 안 함.
-- **floor 기준 = 증거(confirmed+short) 개수** (§4 SSOT 확정). P2b `assemble.floor_ok`는 publishable(생성성공) 기준이라 §4와 배치했음 → **증거기준으로 정렬**(P2b·P2c 공통). floor 미달 = 대량장애 의심 → 그날 전체 보류(승격 0). 통과 시 성공(ok) 항목만 발행(§5).
-- **원자적 발행(§8) = 스테이징 게이트 통과 → content/ 복사(all-or-nothing) → 단일 git commit.** 복사 중 실패 시 `git checkout -- content/`로 워킹트리 복구. **멱등 재실행**: content 덮어쓰기 + ledger `(event_key,date)` 중복 skip.
-- **완결성 검사** = news 인덱스 링크 ↔ `staging/posts/<slug>.md` ↔ `generation.json`의 ok 개수, 3자 일치. 불일치 시 발행 중단.
-- **빌드검증** = `hugo`를 throwaway 출력으로 빌드, exit≠0이면 커밋 중단(깨진 커밋 방지, 파이프로 감싸지 않음).
-- **ledger 필드**: `summary`=**Blog 본문 TL;DR 추출**, `canonical_key`=canonicalize_url(url), `tags`=Blog front matter, `event_key/date/title/url/source/post_path`=generation.json, `entities`/`confidence`=빈값(헤더 예약·digest 미사용, YAGNI defer).
-- 모듈: 신규 `nbs/publish.py`(오케스트레이션). 재사용 `ledger.py`/`models.py`/`config.py`.
+**확정 (P2c, 2026-07-02 — 설계 적대리뷰 advisor+Codex 2R 반영):**
+- **범위 = 로컬 commit까지.** staging→content 승격 · 완결성 검사 · Hugo 빌드검증(렌더 산출물) · ledger 재작성 · **단일 git commit(로컬)**. **push/라이브 배포는 수동 또는 P3** — P2c는 push 안 함.
+- **발행 게이트 (둘 다 통과해야 승격):**
+  1. **evidence-floor (§4 SSOT)** = `results`의 `evidence_level∈{confirmed,short}` 개수 ≥ N(=3). 미달 → 대량 소스장애 의심 → **그날 전체 보류 + 알림**. (`assemble.floor_ok`를 evidence 기준으로 정렬 — P2b `publishable` 기준은 §4와 배치했음. P2b·P2c 공통.)
+  2. **ok≥1** = `status==ok` 개수 ≥ 1. 0이면(증거는 있으나 생성 전멸) **보류 + 알림** — 빈 인덱스 발행 금지(evidence-floor만으론 이 케이스 못 막음). 통과 시 **ok 항목만** 발행(§5), ok 개수가 N 미만이어도 발행(floor는 상한 아님).
+- **완결성 검사 (강화):** 각 ok result ↔ 정확히 1개 `staging/posts/<slug>.md`; `post_path==posts/<slug>.md`; 글 front matter의 `event_key/source_url/date/evidence_level`가 result와 일치; `tags` 비지 않음; slug·event_key·canonical_url 유일; news 링크 집합 == ok slug 집합. 하나라도 불일치 → 발행 중단(all-zero·경합·부분생성 차단).
+- **UseCase = optional(degraded 발행):** 게이트 통과 시 news+posts 발행; usecase 실패(`usecase_error` set)면 usecase 없이 발행 + **degraded 기록/알림**(§5 "발행 가능한 것만" + P2b가 usecase를 이미 격리). 완결성은 usecase 파일을 필수로 요구하지 않음.
+- **내부 링크 = Hugo `relref` shortcode** (P1 샘플·`scripts/smoke_build.sh`와 일치). `build_news_index`의 `](/posts/<slug>/)`는 baseURL subpath(`/ai-daily/`)에서 404 → `{{< relref "/posts/<slug>.md" >}}`로 수정. (P2b 잔존 버그, P2c에서 수정.)
+- **원자적 발행(§8) = 게이트 통과 → content/ 복사 → 빌드검증 → ledger 재작성 → 단일 commit.** pre-commit 어느 단계든 실패 시 **날짜스코프 롤백**: 이 run이 만든 content 파일(**untracked 포함 삭제**) + tracked 덮어쓴 것 `git checkout` + index 클린 확인. (또는 temp 경로 후 `os.replace`.) `git checkout -- content/`만으론 untracked orphan·ledger 미복구.
+- **ledger = 날짜단위 재구축(멱등):** append-only 금지. 전체 읽어 이 date 행 제거 후 현재 발행분 재작성 → temp+atomic replace, content와 같은 commit. 재생성으로 내용 바뀌어도 content·ledger desync 0. (재실행 = 동일 결과.)
+- **ledger 필드**: `summary`=**Blog `## TL;DR` 추출**(파싱 실패 시 폴백=rationale/첫 문단; 빈 summary면 발행 실패 — 다음날 §6 dedup 보호), `canonical_key`=`canonicalize_url(url)`(P2a §6 dedup 키와 반드시 동일), `tags`=Blog front matter, 나머지=generation.json, `entities`/`confidence`=빈값(defer). **`validate_blog_output`가 publishable 글에 파싱가능한 `## TL;DR` 블록 요구**(short는 폴백 허용).
+- **빌드검증 = throwaway `hugo` 빌드 + 렌더 검증**(exit 코드만으론 불충분): 승격된 각 post/news/usecase의 `public/.../index.html` 존재 + news→post href가 `/ai-daily/posts/<slug>/` subpath 포함(smoke_build.sh 패턴). 파이프로 감싸지 않음.
+- **관측성(§12) = `runs/<date>/publish.json`**: `{date, status(published|held|failed), reason, promoted[], degraded(usecase 등), commit_sha, error}`. 보류·실패도 기록(재처리 판단용).
+- **git preflight**: identity 확인; 내용 동일 재실행의 "nothing to commit"은 성공 처리.
+- 모듈: 신규 `nbs/publish.py`(오케스트레이션). `ledger.py`에 날짜단위 재작성 헬퍼 추가. 수정 `assemble.build_news_index`(relref)·`floor_ok`(evidence)·`validate_blog_output`(TL;DR). 재사용 `models.py`(canonicalize_url/parse_frontmatter)/`config.py`.
 
 **미결 (후속 단계):**
 - News 카테고리 라벨 최종안.
