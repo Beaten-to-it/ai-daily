@@ -1,6 +1,6 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-01 (P2b **구현완료·미머지** — 최종리뷰+머지 대기). `/clear` 후 새 세션은 이 문서(특히 §2.5) + 스펙 + P2b plan을 읽고 이어간다.
+> 마지막 갱신: 2026-07-02 (P2b **DONE·머지 완료**. 다음 = **P2c**). `/clear` 후 새 세션은 이 문서(§6b 계약 + §7 P2c 절차) + 스펙 + P2a/P2b plan을 읽고 P2c부터 이어간다.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
@@ -14,26 +14,29 @@
 |---|---|---|
 | P1 | Hugo(PaperMod) 사이트 골격 + GitHub Actions Pages 배포 | ✅ DONE (라이브, 샘플글) |
 | P2a | 수집(RSS+X+Reddit) → claude -p 내용 중복판정·선별 → `selection.json` | ✅ DONE (merged, 20 tests) |
-| P2b | 전문 fetch(grounding 게이트) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | 🟡 **구현완료·미머지** (branch `p2b-fetch-generate-assemble`, 70 tests green). 최종리뷰+머지 미완 — §2.5 |
+| P2b | 전문 fetch(grounding 게이트) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | ✅ **DONE (merged, 80 tests)**. 적대리뷰 2R(Codex+Opus) 통과. 상세 §2.5 |
 | P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | 대기 (P2b 머지 후) |
 | P3 | 자동화(스케줄러·preflight·catchup) + 이메일(idempotent) + 관측성/알림 + Reddit용 Chrome 기동 | 대기 |
 
-## 2.5 P2b 재개 상태 (미머지 — **여기부터 시작**)
+## 2.5 P2b 완료 기록 (DONE — 참고용)
 
-**브랜치:** `p2b-fetch-generate-assemble` (main 미머지). HEAD `100135a`. `python3 -m pytest -q` = **70 passed**.
-**plan:** `docs/superpowers/plans/2026-07-01-p2b-fetch-generate-assemble.md` (9-task TDD, advisor+Codex 2R 통과). 진행 ledger: `.superpowers/sdd/progress.md` (gitignore).
+**머지:** branch `p2b-fetch-generate-assemble` → main. `python3 -m pytest -q` = **80 passed**.
+**plan:** `docs/superpowers/plans/2026-07-01-p2b-fetch-generate-assemble.md` (9-task TDD).
 
-**구현 완료 (9/9 task, 태스크별 리뷰 통과):** `nbs/fetch.py`(체인+classify_evidence), `nbs/generate.py`(claude -p `--tools ""`, delimiter sanitize, generate_all 병렬/timeout/retry/격리), `nbs/assemble.py`(news+floor+usecase), `nbs/stage.py`(→`runs/<date>/staging/`+`generation.json`, P2b→P2c 계약). `prompts/blog.md`,`prompts/usecase.md`. select.py도 `--tools ""` 하드닝(§10).
+**구현:** `nbs/fetch.py`(체인 http→jina→curl + classify_evidence + `_visible_text` 추출 + scheme 가드), `nbs/generate.py`(claude -p `--tools ""`, delimiter sanitize, `_strip_fences` 펜스+서두제거, generate_all 병렬/timeout/retry/격리), `nbs/assemble.py`(news+floor+usecase+검증), `nbs/stage.py`(→`runs/<date>/staging/`+`generation.json`, event_key reject-and-isolate, P2b→P2c 계약). `prompts/blog.md`,`prompts/usecase.md`. select.py도 `--tools ""`(§10).
 
-**실 E2E 증거:** 1차 실행(Claude Code env)=22 fetch + **진짜 한글 블로그 8편** + news 조립 성공(파이프라인 실증). 구현중 실버그 4개 잡아 고침(commit 0adff5e 캡션dedup, 3c98a46 dup-frontmatter+`--tools ""`발견[`--allowedTools ""`는 툴 안막힘!], d77e02c 프롬프트 template-injection+select하딩, 100135a usecase실패격리).
+**최종 실 E2E 증거 (Claude Code env, 2026-07-02, 4항목 실URL 스모크):** `python3 -m nbs.stage --date 2026-07-02` → **published=4, floor_failed=False, usecase_error=None**, posts×4 + news + usecase 스테이징. eyeball 품질 확인(usecase=일반사용자 톤, grounded, 서두/인젝션 흔적 0).
 
-**⚠️ 머지 전 남은 것 (순서대로):**
-1. **[BLOCK] `build_usecase`에 `_strip_fences` 없음** (advisor 최종리뷰 지적). `render_blog`는 `_strip_fences(run_claude_notools(...))` 하는데 `build_usecase`는 `raw.strip()` 후 `startswith("---")`만 체크 → LLM이 ```` ```markdown ```` 펜스/서두 붙이면 usecase 매번 실패(§5격리로 크래시는 안 나지만 usecase 산출물 = 조용히 안 나옴). 수정: `build_usecase`도 `_strip_fences` 재사용 + 펜스 씌운 usecase 출력 테스트 추가. **머지 게이트.**
-2. **깨끗한 생성 스모크 (Claude Code env에서!)**: `claude -p`는 **`codex exec` 밑에서 실패**한다(2026-07-01 Codex 스모크: 4/4 `claude -p failed:` — 인증/nesting). 그러니 생성 스모크는 Claude Code 환경에서 돌린다. 빠른 확인용 4항목 스모크셋: `runs/2026-07-02/selection.json`(article 4개, 실URL). `python3 -m nbs.stage --date 2026-07-02` → generation.json status=ok + posts≥1 + usecase 파일 생성 확인. (스모크는 [[smoke-tests-via-codex]]에 예외 기록됨: claude -p 호출 스모크는 Codex 불가.)
-3. **최종 whole-branch 적대리뷰 마저**: advisor ✅완료(위 #1 지적). **Codex 최종리뷰 미완**, opus whole-branch reviewer 미완. 패키지: `.superpowers/sdd/review-a99e961..100135a.diff`. deferred Minor 트리아지: parse_frontmatter unanchored `---`(fail-safe), fetched.text size cap 없음, `_strip_fences` greedy, stage rerun시 `fetched/` 미삭제.
-4. **머지**: finishing-a-development-branch → main 머지 + push. HANDOFF/memory 갱신(P2b DONE, 다음=P2c).
+**최종 적대리뷰 2R (게이트 통과):** advisor + Codex(xhigh) round-1·2 + Opus whole-branch. 확정 findings 전부 fix (커밋 c59cc8e→12d966a):
+- event_key(LLM출력)를 fetched/slug/post 경로로 그대로 씀 → path traversal/크래시. **reject-and-isolate** (`^[a-z0-9-]{1,100}$` 불일치=excluded, 경로쓰기 스킵; slugify 금지=충돌 덮어쓰기 회피). §5 격리 fetch 루프까지 확장.
+- **§10 LFI**: fetcher가 `file://`/`ftp://` 등 로컬 읽음(실증). `fetch_item` dispatch에서 http(s)만 + `_http_get`/`_curl_impersonate`가 **redirect 최종 scheme** 재검증.
+- fetch gate(`_visible_len`)와 return(`_visible_text`) 불일치 → 통일(`_visible_len=len(_visible_text)`, style 스트립). raw HTML 대신 visible text + 40K cap.
+- usecase: `_strip_fences` 재사용(펜스+서두) + 최소검증(terminated fm + title/date/tags + 본문 비지않음).
+- gen `timeout=180→300`(상세 한글블로그 실측 216s). no-retry-on-timeout는 spec("timeout+1retry")과 배치라 revert.
 
-**커버리지 주의:** 실스모크는 article-only. paper/sns/video fetch는 단위테스트만(reddit=Chrome off). PR/handoff에 명시.
+**deferred (defer-safe, P2c 정리 대상):** ① 미앵커 `---` 분할이 parse_frontmatter/validate_blog_output/build_usecase 종료체크 3곳 공통 — fm 값에 `---`면 오분할(저확률·§5격리). 중앙 수정 권장. ② `_visible_text` 단일라인 붕괴(품질만). ③ stage rerun시 `fetched/` 미삭제(디버그 스크래치, 무해). ④ **floor 의미 = §6b 결정 필요**.
+
+**커버리지 주의:** 실스모크는 article-only. paper/sns/video fetch는 단위테스트만(reddit=Chrome off).
 
 ## 3. 문서 위치
 - 스펙(SSOT): `docs/superpowers/specs/2026-07-01-nbs-news-blog-design.md`
@@ -74,6 +77,7 @@
   - `runs/<date>/staging/usecase/<date>.md` — AI UseCase(일반 사용자 톤). floor 통과 + publishable 존재 시에만 생성.
   - `runs/<date>/generation.json` — `{date, status, results[], published_count, floor_failed}`. `results[]`는 `GenerationResult.to_dict()`: `{event_key,title,url,source,source_type,evidence_level,status(ok|failed|excluded),post_path,slug,rank,rationale,error}`.
 - **floor**: `nbs/assemble.py FLOOR_N=3` — publishable(status=="ok") 개수가 3 미만이면 `floor_failed=true`이고 news/usecase 파일은 **생성되지 않음**(posts는 ok인 것만 그대로 스테이징됨). P2c는 `floor_failed`를 보고 그날 전체를 보류할지 posts만 갈지 정책 결정 필요(스펙 §5).
+  - ⚠️ **P2c 결정 필요 (스펙 §4 vs 코드 모순 — Opus 리뷰 지적):** 코드는 floor를 **생성성공(publishable, status=="ok")** 으로 세는데, 스펙 §4 SSOT는 **증거(confirmed+short) 개수**의 대량-수집실패 감지기로 정의(“상한 아님”). 즉 fetch는 다 됐는데(예: confirmed 5) 생성만 3개 실패하면 코드에선 publishable=2<3 → 그날 index 전체 보류(§4는 발행하라는 날). 코드가 더 보수적이라 defer-safe지만 SSOT와 배치 → **P2c 설계에서 (a) floor를 증거기준으로 바꾸거나 (b) 스펙 §4 문구를 코드에 맞춰 정합화** 중 택해 해소할 것.
 - P2c가 해야 할 일(스펙 §2 파이프라인의 나머지): staging → `content/posts/`·`content/news/`·`content/usecase/` **원자적 승격** + **완결성 검사**(개수·front matter 일치 재검증) + Hugo 빌드 + `git commit`(+push) + `data/published.csv` **ledger append**(post_path 채움, canonical_key/event_key/date/title/url/source/summary/entities/tags/confidence).
 - 코드: `nbs/stage.py`(orchestration), `nbs/fetch.py`(evidence gate: confirmed/short/exclude), `nbs/generate.py`(claude -p 격리 호출 + 스키마 검증), `nbs/assemble.py`(floor/news/usecase), `nbs/models.py`(GenerationResult/FetchResult), `prompts/blog.md`, `prompts/usecase.md`.
 - ledger `data/published.csv` 헤더: `canonical_key,event_key,date,title,url,source,post_path,summary,entities,tags,confidence` (커밋 대상, 아직 비어있음 — **P2c**가 발행 후 append).
