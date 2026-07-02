@@ -127,6 +127,13 @@ def test_rewrite_relref_fails_on_residue():
         em.rewrite_relref('see [x]({{% relref "/posts/y.md" %}})')
 
 
+def test_rewrite_relref_allows_non_ref_shortcode():
+    # a non-link Hugo shortcode (e.g. in claude -p usecase prose) must NOT error the email
+    from nbs import email as em
+    out = em.rewrite_relref("예시: {{< highlight py >}}code{{< /highlight >}}")
+    assert "highlight" in out   # left as literal text, no raise
+
+
 def test_subject_from_frontmatter_title():
     from nbs import email as em
     md = '---\ntitle: "2026-07-03 News"\n---\n본문\n'

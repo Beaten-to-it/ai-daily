@@ -71,7 +71,10 @@ def read_content(date: str) -> tuple[str, str | None]:
 # wrapping publish._RELREF's inner pattern (single source). Any OTHER shortcode
 # ({{% relref %}}, {{< ref >}}, malformed) is left un-rewritten and trips the guard.
 _RELREF_FULL = re.compile(r"\{\{<\s*" + publish._RELREF.pattern + r"\s*>\}\}")
-_ANY_SHORTCODE = re.compile(r"\{\{[<%]")
+# Fail only on an un-rewritten ref/relref (= a broken POST link). Other Hugo shortcodes
+# that may appear in claude -p usecase prose ({{< highlight >}} etc.) are left as literal
+# text — harmless, not a broken link — instead of erroring the whole email that day.
+_ANY_REF_SHORTCODE = re.compile(r"\{\{[<%]\s*/?\s*(?:rel)?ref\b")
 
 
 def strip_front_matter(md: str) -> str:
@@ -89,8 +92,8 @@ def rewrite_relref(md: str) -> str:
     """Rewrite our emitted relref shortcode to an absolute pretty URL; fail on any residue."""
     base = config.SITE_BASEURL.rstrip("/")
     out = _RELREF_FULL.sub(lambda m: f"{base}/posts/{m.group(1)}/", md)
-    if _ANY_SHORTCODE.search(out):
-        raise ValueError(f"unrewritten Hugo shortcode remains (broken link): {out[:120]!r}")
+    if _ANY_REF_SHORTCODE.search(out):
+        raise ValueError(f"unrewritten ref/relref shortcode remains (broken link): {out[:120]!r}")
     return out
 
 
