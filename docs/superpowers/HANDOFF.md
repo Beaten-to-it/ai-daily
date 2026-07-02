@@ -1,6 +1,6 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-02 (P2b DONE·머지. **P2c = 계획완료·구현대기**). `/clear` 후 새 세션은 이 문서(§2.6 P2c 재개점) + **P2c plan**(`docs/superpowers/plans/2026-07-02-p2c-promote-publish.md`) + 스펙 §15 "확정(P2c)"를 읽고 **구현부터** 이어간다.
+> 마지막 갱신: 2026-07-02 (P2b DONE·머지. **P2c = 구현완료·머지대기**: 12태스크 TDD 전부 그린, unit 31 + 전체 111 passed, 실스모크 published). `/clear` 후 새 세션은 §2.6(P2c 완료기록)을 읽고, 남은 게이트(Codex xhigh 적대리뷰 → 머지)부터 이어간다.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
@@ -15,7 +15,7 @@
 | P1 | Hugo(PaperMod) 사이트 골격 + GitHub Actions Pages 배포 | ✅ DONE (라이브, 샘플글) |
 | P2a | 수집(RSS+X+Reddit) → claude -p 내용 중복판정·선별 → `selection.json` | ✅ DONE (merged, 20 tests) |
 | P2b | 전문 fetch(grounding 게이트) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | ✅ **DONE (merged, 80 tests)**. 적대리뷰 2R(Codex+Opus) 통과. 상세 §2.5 |
-| P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | 🟡 **계획완료·구현대기** (plan 2R 리뷰 통과). §2.6 |
+| P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | ✅ **구현완료·머지대기** (12태스크 TDD, unit 31 + 전체 111 passed, 실스모크 published). §2.6 |
 | P3 | 자동화(스케줄러·preflight·catchup) + 이메일(idempotent) + 관측성/알림 + Reddit용 Chrome 기동 | 대기 |
 
 ## 2.5 P2b 완료 기록 (DONE — 참고용)
@@ -38,7 +38,16 @@
 
 **커버리지 주의:** 실스모크는 article-only. paper/sns/video fetch는 단위테스트만(reddit=Chrome off).
 
-## 2.6 P2c 재개점 (계획완료·구현대기 — **여기부터**)
+## 2.6 P2c 완료기록 (구현완료·머지대기 — **여기부터**)
+
+**구현 완료 (2026-07-02, executing-plans 직접실행):** plan 12태스크 TDD 전부 그린. 신규 `nbs/publish.py`(decide/check_completeness/date_writeset/preflight_clean/promote/rollback/_hugo_build/build_verify/ledger_rows/run/main) + 수정 `models.parse_frontmatter_strict`, `assemble.floor_ok`(증거기준)·`build_news_index`(relref), `ledger.rewrite_date`, `prompts/blog.md`(## TL;DR). 커밋: 72c2eff→5b5142d(태스크당 1커밋).
+- **검증:** `python3 -m pytest -q` = **111 passed**(P2b 80 + P2c 31). 
+- **실스모크 (Claude env, 2026-07-02):** publish.run → `[published] promoted=6 degraded={}`, 실 hugo 빌드 통과(build_verify 무에러=렌더+subpath href 확인), content posts×4+news+usecase 승격, ledger 4행 전부 summary 비지않음(257~340자)+tags. 스모크 후 tree clean(git clean).
+  - ⚠️ **스모크 접근 편차 (의도적, advisor 승인):** plan Task12는 `nbs.stage --date`로 staging 전체 재생성(=live fetch + claude -p 재호출)을 명시하나, 그건 비결정적(죽은 URL·LLM 출력변동→floor 결과가 바뀌어 P2c와 무관하게 스모크 실패 가능)이라, P2b가 이미 검증한 staging을 재사용하고 **news 인덱스만 결정적으로 재빌드**(`build_news_index`로 relref화, LLM 0)한 뒤 `publish --no-commit` 실행. 스모크의 고유가치(실 hugo + 실 git/fs promote + 실 ledger)는 그대로 커버. `scripts/p2c_smoke.sh`는 fresh-day용 full 파이프라인 형태로 커밋됨.
+- **deferred 미해결 (defer-safe):** ① `parse_frontmatter`/`parse_frontmatter_strict` 미앵커 `---` 분할(값에 `---`면 오분할, 우리 포맷엔 없음). ② ledger `entities`/`confidence` 필드 빈값(YAGNI, ledger_digest 무시). ③ 실스모크는 article-only(P2b 커버리지와 동일; paper/sns/video 승격은 단위테스트만).
+- **남은 게이트(머지 전):** advisor 적대리뷰 통과✅ / **Codex xhigh 적대리뷰 미실시** → 실행 후 finishing-a-development-branch로 머지. push는 P3(수동/자동 배포).
+
+<details><summary>(이전) 재개점 — 계획완료·구현대기 시점 기록</summary>
 
 **상태:** brainstorm→스펙확정→writing-plans 끝. **구현 미착수**(사용자 "구현해" 트리거 대기 — 1순위 룰: 트리거 전 코드 금지).
 **브랜치:** `p2c-promote-publish` (main 미머지, 현재 체크아웃됨). HEAD `b47ca18`. main 대비 앞선 커밋 = 스펙 §15 확정(4커밋) + P2c plan(3커밋)뿐, **코드 0**.
@@ -58,6 +67,8 @@
 
 **재개 절차:** ①`cd /home/beaten/project/NBs && export PATH="$HOME/.local/bin:$PATH"` ②`git branch --show-current`=`p2c-promote-publish` 확인, `python3 -m pytest -q`=80 passed 베이스라인 ③plan 읽기 ④사용자 "구현해" → **subagent-driven-development**(태스크마다 fresh subagent + 2단계 리뷰, 태스크 12개 순서대로) 또는 executing-plans ⑤전 태스크 그린 후 실 스모크(Claude env, `bash scripts/p2c_smoke.sh 2026-07-02`) → 최종 whole-branch 리뷰 → 머지.
 **주의:** 실 스모크는 `claude -p` 호출(staging 재생성) → **Claude Code env 필수**([[2026-07-02-claude-p-fails-under-codex-exec]]). 빌드/검증은 파이프로 감싸지 말 것([[2026-07-01-pipe-hides-build-failure]]).
+
+</details>
 
 ## 3. 문서 위치
 - 스펙(SSOT): `docs/superpowers/specs/2026-07-01-nbs-news-blog-design.md`
