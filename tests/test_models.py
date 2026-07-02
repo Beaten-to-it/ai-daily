@@ -77,3 +77,14 @@ def test_bad_evidence_level():
     assert any("evidence_level" in e for e in validate_blog_output(bad))
 def test_no_frontmatter_at_all():
     assert validate_blog_output("just text") == ["missing front matter block"]
+
+from nbs.models import parse_frontmatter_strict
+
+def test_parse_frontmatter_strict_unquotes_and_lists():
+    md = ('---\ntitle: "Claude: 5"\nsource_url: \'https://x/a\'\n'
+          'tags: [ai, "model release"]\nempty: []\n---\nbody\n')
+    fm = parse_frontmatter_strict(md)
+    assert fm["title"] == "Claude: 5"
+    assert fm["source_url"] == "https://x/a"
+    assert fm["tags"] == ["ai", "model release"]
+    assert fm["empty"] == []

@@ -94,6 +94,27 @@ def parse_frontmatter(md) -> dict:
             keys[k.strip()] = v.strip()
     return keys
 
+def _unquote(s):
+    s = s.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        return s[1:-1]
+    return s
+
+def parse_frontmatter_strict(md) -> dict:
+    # like parse_frontmatter but unquotes scalars and parses `key: [a, b]` as a list.
+    # ponytail: NOT full YAML (stdlib-only rule); covers our own emitted front matter.
+    # Inherits parse_frontmatter's unanchored-`---` split (documented defer-safe minor;
+    # our posts never put `---` inside a value).
+    out = {}
+    for k, v in parse_frontmatter(md).items():
+        v = v.strip()
+        if v.startswith("[") and v.endswith("]"):
+            inner = v[1:-1].strip()
+            out[k] = [_unquote(x) for x in inner.split(",") if x.strip()] if inner else []
+        else:
+            out[k] = _unquote(v)
+    return out
+
 def validate_blog_output(md) -> list:
     if not isinstance(md, str) or not md.lstrip().startswith("---"):
         return ["missing front matter block"]
