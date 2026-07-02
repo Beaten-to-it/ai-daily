@@ -231,10 +231,12 @@ def test_run_publishes_and_writes_ledger_and_manifest(tmp_path, monkeypatch):
     assert (root/"content"/"news"/"2026-07-01.md").exists()
     led=(root/"data"/"published.csv").read_text(encoding="utf-8")
     assert "2026-07-01-a" in led and led.count("2026-07-01-a")==1
-    # idempotent rerun -> still published, still one row
+    # idempotent rerun -> still published, still one row, NO new commit (HEAD unchanged)
+    head=_git_in(["rev-parse","HEAD"], root).stdout.strip()
     m2=publish.run("2026-07-01")
     assert m2["status"]=="published"
     assert (root/"data"/"published.csv").read_text(encoding="utf-8").count("2026-07-01-a")==1
+    assert _git_in(["rev-parse","HEAD"], root).stdout.strip()==head and m2["commit_sha"]==head
 
 def test_run_degraded_publishes_without_usecase(tmp_path, monkeypatch):
     # §15: usecase optional — usecase_error set, no staging usecase file -> still publishes
@@ -259,3 +261,46 @@ def test_run_rolls_back_on_build_failure(tmp_path, monkeypatch):
     assert m["status"]=="failed"
     assert not (root/"content"/"posts"/"2026-07-01-a.md").exists()   # rolled back
     assert _git_in(["status","--porcelain"], root).stdout.strip()==""  # clean tree/ledger
+
+def _okresd(ek, date):
+    s=f"{date}-{ek}"
+    return {"event_key":ek,"evidence_level":"confirmed","status":"ok","slug":s,
+            "url":f"https://x/{date}/{ek}","post_path":f"posts/{s}.md","title":"T","source":"S"}
+
+def test_run_rerun_older_date_no_spurious_commit(tmp_path, monkeypatch):
+    # Codex R1 MAJOR: rerunning an OLDER published day must be a no-op — the ledger must not
+    # reorder rows (reorder = CSV diff = spurious commit).
+    root=_init_repo(tmp_path, monkeypatch)
+    def _mk(date): return {"date":date, "results":[_okresd("a",date),_okresd("b",date),_okresd("c",date)]}
+    def _stub(date): return lambda o: _render(o, date, [f"{date}-{k}" for k in "abc"], usecase=True)
+    g1=_mk("2026-07-01"); _stage_full(root, g1)
+    monkeypatch.setattr(publish, "_hugo_build", _stub("2026-07-01"))
+    assert publish.run("2026-07-01")["status"]=="published"
+    g2=_mk("2026-07-02"); _stage_full(root, g2)
+    monkeypatch.setattr(publish, "_hugo_build", _stub("2026-07-02"))
+    assert publish.run("2026-07-02")["status"]=="published"
+    head=_git_in(["rev-parse","HEAD"], root).stdout.strip()
+    monkeypatch.setattr(publish, "_hugo_build", _stub("2026-07-01"))   # rerun the OLDER day
+    m=publish.run("2026-07-01")
+    assert m["status"]=="published"
+    assert _git_in(["rev-parse","HEAD"], root).stdout.strip()==head and m["commit_sha"]==head  # no new commit
+    # ledger stays date-ordered: 07-01 rows before 07-02 rows
+    led=(root/"data"/"published.csv").read_text(encoding="utf-8")
+    assert led.index("2026-07-01-a") < led.index("2026-07-02-a")
+
+def test_run_rejects_unsafe_slug(tmp_path, monkeypatch):
+    # Codex R1 BLOCK: a traversal slug from generation.json must be rejected at the
+    # completeness gate (before any promote/rollback), leaving the tree untouched.
+    root=_init_repo(tmp_path, monkeypatch)
+    evil={"event_key":"a","evidence_level":"confirmed","status":"ok","slug":"../evil",
+          "url":"https://x/a","post_path":"posts/../evil.md","title":"T","source":"S"}
+    gen={"date":"2026-07-01","results":[evil, _okres("b"), _okres("c")]}
+    d=root/"runs"/"2026-07-01"; staging=d/"staging"
+    _write_post(staging,"2026-07-01-b","b","https://x/b"); _write_post(staging,"2026-07-01-c","c","https://x/c")
+    _write_news(staging,["2026-07-01-b","2026-07-01-c"])
+    d.mkdir(parents=True, exist_ok=True); (d/"generation.json").write_text(json.dumps(gen), encoding="utf-8")
+    m=publish.run("2026-07-01")
+    assert m["status"]=="failed" and "slug" in (m["error"] or "").lower()
+    assert not (root/"content"/"_index.md").exists()                 # no traversal write
+    assert not (root/"content"/"posts"/"2026-07-01-b.md").exists()   # nothing promoted
+    assert _git_in(["status","--porcelain"], root).stdout.strip()==""
