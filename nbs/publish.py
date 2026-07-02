@@ -1,5 +1,5 @@
 import re
-import subprocess, shutil
+import subprocess, shutil, tempfile
 from pathlib import Path
 from . import assemble
 from .models import parse_frontmatter_strict, canonicalize_url, validate_blog_output
@@ -121,3 +121,28 @@ def rollback(paths):
             _git(["reset", "-q", "--", rel])          # unstage if staged (no-op otherwise)
             p = ROOT / rel
             if p.exists(): p.unlink()
+
+def _hugo_build(outdir):
+    # no pipe: exit code must survive. Uses hugo.toml baseURL (=/ai-daily/).
+    return subprocess.run(["hugo", "--quiet", "-d", outdir], cwd=str(ROOT),
+                          capture_output=True, text=True).returncode
+
+def build_verify(gen):
+    date = gen["date"]; errs = []
+    with tempfile.TemporaryDirectory() as td:
+        if _hugo_build(td) != 0:
+            return ["hugo build failed (exit != 0)"]
+        out = Path(td)
+        news_html = out / "news" / date / "index.html"
+        if not news_html.exists():
+            errs.append(f"news page not rendered: news/{date}/index.html")
+        html = news_html.read_text(encoding="utf-8", errors="replace") if news_html.exists() else ""
+        for r in _ok(gen):
+            slug = r["slug"]
+            if not (out/"posts"/slug/"index.html").exists():
+                errs.append(f"post not rendered: posts/{slug}/index.html")
+            if f"/ai-daily/posts/{slug}/" not in html:
+                errs.append(f"news missing subpath href for {slug}")
+        if (ROOT/"content"/"usecase"/f"{date}.md").exists() and not (out/"usecase"/date/"index.html").exists():
+            errs.append(f"usecase page not rendered: usecase/{date}/index.html")
+    return errs

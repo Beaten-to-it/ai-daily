@@ -158,3 +158,29 @@ def test_rollback_restores_and_deletes(tmp_path, monkeypatch):
     assert (root/"content"/"posts"/"2026-07-01-old.md").read_text() == "orig\n"   # restored to HEAD
     assert not (root/"content"/"posts"/"2026-07-01-new.md").exists()              # untracked removed
     assert _git_in(["status","--porcelain"], root).stdout.strip() == ""           # index clean
+
+def _render(outdir, date, slugs, usecase=False):
+    for s in slugs:
+        (Path(outdir)/"posts"/s).mkdir(parents=True); (Path(outdir)/"posts"/s/"index.html").write_text("x")
+    (Path(outdir)/"news"/date).mkdir(parents=True)
+    (Path(outdir)/"news"/date/"index.html").write_text("".join(f'<a href="/ai-daily/posts/{s}/">x</a>' for s in slugs))
+    if usecase:
+        (Path(outdir)/"usecase"/date).mkdir(parents=True); (Path(outdir)/"usecase"/date/"index.html").write_text("u")
+    return 0
+
+def test_build_verify_flags_missing_rendered_post(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch); gen=_gen2()
+    monkeypatch.setattr(publish, "_hugo_build", lambda o: _render(o, "2026-07-01", ["2026-07-01-a"]))  # b missing
+    assert any("2026-07-01-b" in e for e in publish.build_verify(gen))
+
+def test_build_verify_flags_missing_usecase_when_present(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch); gen=_gen2()
+    (root/"content"/"usecase"/"2026-07-01.md").write_text("---\ntitle: U\n---\nu\n", encoding="utf-8")
+    monkeypatch.setattr(publish, "_hugo_build", lambda o: _render(o, "2026-07-01", ["2026-07-01-a","2026-07-01-b"], usecase=False))
+    assert any("usecase" in e.lower() for e in publish.build_verify(gen))
+
+def test_build_verify_passes_when_all_rendered(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch); gen=_gen2()
+    (root/"content"/"usecase"/"2026-07-01.md").write_text("---\ntitle: U\n---\nu\n", encoding="utf-8")
+    monkeypatch.setattr(publish, "_hugo_build", lambda o: _render(o, "2026-07-01", ["2026-07-01-a","2026-07-01-b"], usecase=True))
+    assert publish.build_verify(gen) == []
