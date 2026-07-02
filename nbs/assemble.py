@@ -6,7 +6,9 @@ def publishable(results):
     return [r for r in results if r.status == "ok"]
 
 def floor_ok(results):
-    return len(publishable(results)) >= FLOOR_N
+    # §4: floor is a mass-source-failure detector on EVIDENCE (confirmed+short), not a
+    # generation-success count and not a cap. P2c additionally requires ok>=1 to publish.
+    return sum(1 for r in results if r.evidence_level in ("confirmed", "short")) >= FLOOR_N
 
 def build_news_index(results, date):
     items = sorted(publishable(results), key=lambda r: r.rank)

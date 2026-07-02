@@ -60,3 +60,16 @@ def test_usecase_rejects_missing_required_field():
     with pytest.raises(ValueError):
         assemble.build_usecase([_ok_with_md("a")], "2026-07-01",
             run=lambda t, timeout=180: "---\ntitle: U\n---\nbody\n")   # no date/tags
+
+from nbs.models import GenerationResult as _G
+def _rev(k, evidence, status):
+    return _G(event_key=k, title=k, url="u", source="S", source_type="article",
+              evidence_level=evidence, status=status, post_path=None, slug=k, rank=1, rationale="r")
+
+def test_floor_counts_evidence_not_generation_success():
+    res = [_rev("a","confirmed","ok"), _rev("b","confirmed","failed"), _rev("c","confirmed","failed")]
+    assert assemble.floor_ok(res) is True
+
+def test_floor_fails_when_evidence_below_n():
+    res = [_rev("a","confirmed","ok"), _rev("b","short","ok"), _rev("c","exclude","excluded")]
+    assert assemble.floor_ok(res) is False
