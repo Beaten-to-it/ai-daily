@@ -17,7 +17,7 @@
 | P2b | 전문 fetch(grounding 게이트) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | ✅ **DONE (merged, 80 tests)**. 적대리뷰 2R(Codex+Opus) 통과. 상세 §2.5 |
 | P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | ✅ **DONE·머지** (main, 117 tests, 적대리뷰 2R). §2.6 |
 | P3a | 오케스트레이터: collect→select→stage→publish→**push**→Actions배포. 날단위 멱등·crash-safe·no-email | ✅ **DONE·merged·pushed** (main==origin `ea8e29e`, 149 passed, 적대리뷰 2R + code-review 라운드). §2.7 |
-| P3b | 이메일 발송(Gmail, News+UseCase, push 성공 후, idempotent) | 🔵 **진행중 — spec 확정·2R통과, plan 대기**. branch `p3b-email`. 스펙 §15 "확정 (P3b)" + 부록A P3b리뷰 |
+| P3b | 이메일 발송(Gmail, News+UseCase, push 성공 후, idempotent) | 🟢 **구현완료·189 passed·실 dry-run 스모크 통과, 머지대기**. branch `p3b-email`. `nbs/email.py`+`scripts/reauth_google.py`+orchestrate seam. 스펙 §15 + plan 2026-07-03-p3b-email.md |
 | P3c | 스케줄러(systemd timer)·preflight·catchup·Reddit Chrome 무인기동 | 대기 (P3a 후) |
 | P3d | 관측성/알림(run.json 소비, 실패·누락·인증만료·floor미달 이메일, 일일 메트릭) | 대기 (P3b 후) |
 
