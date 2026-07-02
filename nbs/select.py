@@ -17,7 +17,11 @@ def parse_selection(raw):
     return json.loads(blob)
 
 def run_claude(text, timeout=300):
-    r=subprocess.run(["claude","-p"], input=text, capture_output=True, text=True, timeout=timeout)
+    # --tools "" : empty tool set = no tool access (§10). select only needs text->JSON
+    # generation over untrusted RSS/X/Reddit candidate text; --allowedTools "" does NOT
+    # restrict (see nbs/generate.py, task-4-report.md Step 0) -- --tools "" is the flag
+    # that actually zeroes tool_use.
+    r=subprocess.run(["claude","-p","--tools",""], input=text, capture_output=True, text=True, timeout=timeout)
     if r.returncode!=0: raise RuntimeError(f"claude -p failed: {r.stderr[:300]}")
     return r.stdout
 
