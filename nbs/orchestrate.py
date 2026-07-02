@@ -142,6 +142,9 @@ def run(date, *, force=False, no_push=False, runner=None, now=None):
             if action == "skip":
                 return finish("skipped", "already published and pushed")
             if action == "push_only":
+                if no_push:   # honor dry-run on the recovery path too (else smoke pushes to origin)
+                    base["stages"]["push"] = {"status": "skipped", "reason": "--no-push"}
+                    return finish("published", "already published locally (push skipped)")
                 st, sha, reason = _push(date)
                 base["stages"]["push"] = {"status": st, "reason": reason or "push-only recovery"}
                 top = "re-pushed without regeneration" if st == "published" else f"push-only recovery failed: {reason}"

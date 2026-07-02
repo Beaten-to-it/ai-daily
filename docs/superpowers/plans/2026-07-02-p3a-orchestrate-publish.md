@@ -577,6 +577,15 @@ def test_run_no_push_flag(tmp_path, monkeypatch):
     assert m["status"]=="published" and m["stages"]["push"]["status"]=="skipped" and pushes["n"]==0
     assert json.loads((root/"runs"/"2026-07-01"/"publish.json").read_text()).get("pushed") is None
 
+def test_run_pushonly_respects_no_push(tmp_path, monkeypatch):
+    # --no-push MUST be honored on the push_only recovery path too, else a dry-run smoke on a
+    # published-locally-not-pushed day pushes to the real origin.
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    _publish_news(root, "2026-07-01", pushed=False)   # recovery state
+    m = orchestrate.run("2026-07-01", runner=(lambda n, d: 0), no_push=True, now=_fixed_now())
+    assert m["stages"]["push"]["status"]=="skipped"
+    assert _git_in(["ls-remote","origin","refs/heads/main"], root).stdout.strip()==""   # NOT pushed
+
 def test_run_rejects_bad_date(tmp_path, monkeypatch):
     root=_init_repo(tmp_path, monkeypatch)
     m = orchestrate.run("../evil", now=_fixed_now())
@@ -627,6 +636,9 @@ def run(date, *, force=False, no_push=False, runner=None, now=None):
             if action == "skip":
                 return finish("skipped", "already published and pushed")
             if action == "push_only":
+                if no_push:   # honor dry-run on the recovery path too (else smoke pushes to origin)
+                    base["stages"]["push"] = {"status": "skipped", "reason": "--no-push"}
+                    return finish("published", "already published locally (push skipped)")
                 st, sha, reason = _push(date)
                 base["stages"]["push"] = {"status": st, "reason": reason or "push-only recovery"}
                 top = "re-pushed without regeneration" if st == "published" else f"push-only recovery failed: {reason}"
