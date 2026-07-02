@@ -1,6 +1,9 @@
 import re
+import subprocess, shutil
+from pathlib import Path
 from . import assemble
 from .models import parse_frontmatter_strict, canonicalize_url, validate_blog_output
+from .config import ROOT, run_dir
 
 _TLDR_MARKER = re.compile(r"(?im)^\s*(?:#+\s*TL;DR|\*\*\s*TL;DR\s*\*\*)\s*$")
 _RELREF = re.compile(r'relref\s+"/posts/([^"]+?)\.md"')
@@ -73,3 +76,48 @@ def check_completeness(gen, staging):
     if linked != set(slugs):
         errs.append(f"news links {sorted(linked)} != ok slugs {sorted(slugs)}")
     return errs
+
+def _git(args): return subprocess.run(["git"] + args, cwd=str(ROOT), capture_output=True, text=True)
+def _head_has(rel): return _git(["cat-file", "-e", f"HEAD:{rel}"]).returncode == 0
+
+def date_writeset(gen):
+    date = gen["date"]
+    posts = {str(p.relative_to(ROOT)) for p in (ROOT/"content"/"posts").glob(f"{date}-*.md")}
+    # R2-#3: union with HEAD-tracked same-date posts so a worktree-deleted-but-tracked
+    # stale post is still in scope (glob only sees files present on disk).
+    posts |= set(_git(["ls-files", "--", f"content/posts/{date}-*.md"]).stdout.split())
+    posts |= {f"content/posts/{r['slug']}.md" for r in _ok(gen)}
+    return sorted(posts) + [f"content/news/{date}.md", f"content/usecase/{date}.md", "data/published.csv"]
+
+def preflight_clean(paths):
+    out = _git(["status", "--porcelain", "--"] + paths).stdout
+    return [ln[3:].strip() for ln in out.splitlines() if ln[3:].strip()]
+
+def promote(gen, staging):
+    date = gen["date"]; touched = []
+    ok_files = {f"{r['slug']}.md" for r in _ok(gen)}
+    for p in (ROOT/"content"/"posts").glob(f"{date}-*.md"):     # delete stale same-date posts
+        if p.name not in ok_files:
+            touched.append(str(p.relative_to(ROOT))); p.unlink()
+    def _cp(src, dst):
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, dst); touched.append(str(dst.relative_to(ROOT)))
+    for r in _ok(gen):
+        _cp(staging/"posts"/f"{r['slug']}.md", ROOT/"content"/"posts"/f"{r['slug']}.md")
+    _cp(staging/"news"/f"{date}.md", ROOT/"content"/"news"/f"{date}.md")
+    uc = staging/"usecase"/f"{date}.md"
+    target_uc = ROOT/"content"/"usecase"/f"{date}.md"
+    if uc.exists():
+        _cp(uc, target_uc)
+    elif target_uc.exists():                        # R2-#2: degraded rerun — drop stale usecase
+        touched.append(str(target_uc.relative_to(ROOT))); target_uc.unlink()
+    return touched
+
+def rollback(paths):
+    for rel in paths:
+        if _head_has(rel):
+            _git(["restore", "--staged", "--worktree", "--source=HEAD", "--", rel])
+        else:
+            _git(["reset", "-q", "--", rel])          # unstage if staged (no-op otherwise)
+            p = ROOT / rel
+            if p.exists(): p.unlink()

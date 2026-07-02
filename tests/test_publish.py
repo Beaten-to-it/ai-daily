@@ -92,3 +92,69 @@ def test_completeness_flags_news_link_mismatch(tmp_path):
     for r in gen["results"]: _write_post(staging, r["slug"], r["event_key"], r["url"])
     _write_news(staging,["2026-07-01-a"])
     assert any("news" in e.lower() for e in check_completeness(gen, staging))
+
+import subprocess
+from nbs import publish, config
+
+def _git_in(args, cwd): return subprocess.run(["git"]+args, cwd=str(cwd), capture_output=True, text=True)
+
+def _init_repo(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    monkeypatch.setattr(publish, "ROOT", tmp_path)
+    monkeypatch.setattr(publish, "run_dir", lambda date: tmp_path/"runs"/date)
+    _git_in(["init","-q"], tmp_path); _git_in(["config","user.email","t@t"], tmp_path); _git_in(["config","user.name","t"], tmp_path)
+    for d in ("posts","news","usecase"): (tmp_path/"content"/d).mkdir(parents=True)
+    (tmp_path/"data").mkdir()
+    (tmp_path/"content"/".keep").write_text("x")
+    _git_in(["add","-A"], tmp_path); _git_in(["commit","-qm","init"], tmp_path)
+    return tmp_path
+
+def _gen2(date="2026-07-01"): return {"date":date, "results":[_okres("a"), _okres("b")]}
+
+def _stage_posts(root, gen):
+    staging=root/"runs"/gen["date"]/"staging"
+    for r in gen["results"]: _write_post(staging, r["slug"], r["event_key"], r["url"], date=gen["date"])
+    _write_news(staging, [r["slug"] for r in gen["results"]], date=gen["date"])
+    (staging/"usecase").mkdir(parents=True, exist_ok=True)
+    (staging/"usecase"/f"{gen['date']}.md").write_text("---\ntitle: U\n---\nu\n", encoding="utf-8")
+    return staging
+
+def test_promote_copies_and_deletes_stale(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    # a stale same-date post from a previous run, committed
+    (root/"content"/"posts"/"2026-07-01-old.md").write_text("---\ntitle: O\n---\nx\n", encoding="utf-8")
+    _git_in(["add","-A"], root); _git_in(["commit","-qm","stale"], root)
+    gen=_gen2(); staging=_stage_posts(root, gen)
+    touched = publish.promote(gen, staging)
+    assert (root/"content"/"posts"/"2026-07-01-a.md").exists()
+    assert not (root/"content"/"posts"/"2026-07-01-old.md").exists()   # stale deleted
+    assert (root/"content"/"news"/"2026-07-01.md").exists() and (root/"content"/"usecase"/"2026-07-01.md").exists()
+
+def test_promote_drops_stale_usecase_when_staging_absent(tmp_path, monkeypatch):
+    # R2-#2: degraded rerun (no staging usecase) must remove a previously-published usecase
+    root=_init_repo(tmp_path, monkeypatch)
+    (root/"content"/"usecase"/"2026-07-01.md").write_text("---\ntitle: old U\n---\nx\n", encoding="utf-8")
+    _git_in(["add","-A"], root); _git_in(["commit","-qm","old usecase"], root)
+    gen=_gen2(); staging=_stage_posts(root, gen)
+    (staging/"usecase"/"2026-07-01.md").unlink()          # simulate degraded: no staging usecase
+    touched = publish.promote(gen, staging)
+    assert not (root/"content"/"usecase"/"2026-07-01.md").exists()
+    assert "content/usecase/2026-07-01.md" in touched
+
+def test_preflight_detects_dirty_writeset(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    (root/"data"/"published.csv").write_text("dirty\n", encoding="utf-8")
+    assert "data/published.csv" in publish.preflight_clean(["data/published.csv"])
+
+def test_rollback_restores_and_deletes(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    (root/"content"/"posts"/"2026-07-01-old.md").write_text("orig\n", encoding="utf-8")
+    _git_in(["add","-A"], root); _git_in(["commit","-qm","base"], root)
+    # simulate a partial promote: overwrite tracked + create untracked, stage them
+    (root/"content"/"posts"/"2026-07-01-old.md").write_text("CHANGED\n", encoding="utf-8")
+    (root/"content"/"posts"/"2026-07-01-new.md").write_text("NEW\n", encoding="utf-8")
+    _git_in(["add","-A"], root)
+    publish.rollback(["content/posts/2026-07-01-old.md", "content/posts/2026-07-01-new.md"])
+    assert (root/"content"/"posts"/"2026-07-01-old.md").read_text() == "orig\n"   # restored to HEAD
+    assert not (root/"content"/"posts"/"2026-07-01-new.md").exists()              # untracked removed
+    assert _git_in(["status","--porcelain"], root).stdout.strip() == ""           # index clean
