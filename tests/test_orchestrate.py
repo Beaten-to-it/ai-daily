@@ -1,6 +1,12 @@
 import pytest
 from nbs import orchestrate, config
 
+@pytest.fixture(autouse=True)
+def _no_real_email(monkeypatch):
+    # NEVER fork the real `nbs.email` subprocess in unit tests (hermetic — no git/network/send).
+    monkeypatch.setattr(orchestrate, "_default_email_runner",
+                        lambda date, run_id: (0, {"status": "not_published", "reason": "stubbed"}))
+
 def test_lock_is_exclusive(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ROOT", tmp_path)
     monkeypatch.setattr(orchestrate, "ROOT", tmp_path)
@@ -317,3 +323,57 @@ def test_run_pushonly_reports_push_pending(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrate, "_push", lambda date: ("push_pending", None, "network"))
     m = orchestrate.run("2026-07-01", runner=(lambda n,d:0), now=_fixed_now())
     assert m["status"]=="push_pending" and m["stages"]["push"]["status"]=="push_pending"
+
+
+# --- P3b email seam ---------------------------------------------------------
+
+def _email_full_runner(orch, publish_status):
+    def fake_runner(name, date):
+        orch.run_dir(date).mkdir(parents=True, exist_ok=True)
+        art = {"collect": "candidates.json", "select": "selection.json",
+               "stage": "generation.json", "publish": "publish.json"}[name]
+        payload = {"status": "ok"} if name == "stage" else (
+            {"status": publish_status, "reason": "r"} if name == "publish" else {"x": 1})
+        (orch.run_dir(date) / art).write_text(json.dumps(payload)); return 0
+    return fake_runner
+
+def test_email_called_on_published(tmp_path, monkeypatch):
+    from nbs import orchestrate as orch, config
+    monkeypatch.setattr(config, "ROOT", tmp_path); monkeypatch.setattr(orch, "ROOT", tmp_path)
+    monkeypatch.setattr(orch, "run_dir", lambda d: tmp_path / "runs" / d)
+    monkeypatch.setattr(orch, "decide_action", lambda date, *, force: "full")
+    monkeypatch.setattr(orch, "_push", lambda date: ("published", "abc", ""))
+    calls = []
+    m = orch.run("2026-07-03", runner=_email_full_runner(orch, "published"),
+                 email_runner=lambda d, r: calls.append((d, r)) or (0, {"status": "sent"}))
+    assert m["status"] == "published"
+    assert len(calls) == 1 and calls[0][0] == "2026-07-03"
+    assert m["stages"]["email"]["status"] == "sent"
+
+def test_email_failure_maps_to_failed_and_does_not_demote(tmp_path, monkeypatch):
+    from nbs import orchestrate as orch, config
+    monkeypatch.setattr(config, "ROOT", tmp_path); monkeypatch.setattr(orch, "ROOT", tmp_path)
+    monkeypatch.setattr(orch, "run_dir", lambda d: tmp_path / "runs" / d)
+    monkeypatch.setattr(orch, "decide_action", lambda date, *, force: "skip")
+    m = orch.run("2026-07-03", email_runner=lambda d, r: (1, {"status": "error", "reason": "boom"}))
+    assert m["status"] == "skipped"                       # NOT demoted
+    assert m["stages"]["email"]["status"] == "failed"     # rc!=0 normalized to failed (P3d alert)
+
+def test_email_not_called_on_no_push(tmp_path, monkeypatch):
+    from nbs import orchestrate as orch, config
+    monkeypatch.setattr(config, "ROOT", tmp_path); monkeypatch.setattr(orch, "ROOT", tmp_path)
+    monkeypatch.setattr(orch, "run_dir", lambda d: tmp_path / "runs" / d)
+    monkeypatch.setattr(orch, "decide_action", lambda date, *, force: "skip")
+    calls = []
+    m = orch.run("2026-07-03", no_push=True, email_runner=lambda d, r: calls.append(1) or (0, {}))
+    assert m["status"] == "skipped" and calls == []
+
+def test_email_not_called_on_held(tmp_path, monkeypatch):
+    from nbs import orchestrate as orch, config
+    monkeypatch.setattr(config, "ROOT", tmp_path); monkeypatch.setattr(orch, "ROOT", tmp_path)
+    monkeypatch.setattr(orch, "run_dir", lambda d: tmp_path / "runs" / d)
+    monkeypatch.setattr(orch, "decide_action", lambda date, *, force: "full")
+    calls = []
+    m = orch.run("2026-07-03", runner=_email_full_runner(orch, "held"),
+                 email_runner=lambda d, r: calls.append(1) or (0, {}))
+    assert m["status"] == "held" and calls == []

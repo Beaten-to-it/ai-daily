@@ -1,6 +1,6 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-02 (P2c DONE·머지. **P3a = 구현완료·리뷰통과·머지대기**: 오케스트레이터+push, 7태스크 TDD, 전체 142 passed, 적대리뷰 2R(advisor+Codex xhigh) 통과, 실체인 부분스모크). `/clear` 후 새 세션은 §2.7(P3a 완료기록)을 읽고 finishing-a-development-branch(머지)부터 이어간다.
+> 마지막 갱신: 2026-07-03 (**P3a merged·pushed**(main==origin `ea8e29e`, 149 passed). **P3b = spec 확정·adversarial 2R(advisor+Codex xhigh) 통과**, branch `p3b-email`, 사용자 리뷰 대기 → 이후 writing-plans. 스펙 §15 "확정 (P3b)" + 부록A. `/clear` 후 새 세션은 그 블록 읽고 **사용자 spec 승인 확인 → writing-plans**부터. 구현은 "구현해" 트리거 후.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
@@ -16,8 +16,8 @@
 | P2a | 수집(RSS+X+Reddit) → claude -p 내용 중복판정·선별 → `selection.json` | ✅ DONE (merged, 20 tests) |
 | P2b | 전문 fetch(grounding 게이트) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | ✅ **DONE (merged, 80 tests)**. 적대리뷰 2R(Codex+Opus) 통과. 상세 §2.5 |
 | P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | ✅ **DONE·머지** (main, 117 tests, 적대리뷰 2R). §2.6 |
-| P3a | 오케스트레이터: collect→select→stage→publish→**push**→Actions배포. 날단위 멱등·crash-safe·no-email | ✅ **구현완료·리뷰통과·머지대기** (7태스크 TDD, 전체 142 passed, 적대리뷰 2R 통과). branch `p3a-orchestrate-publish`. §2.7 |
-| P3b | 이메일 발송(Gmail, News+UseCase, push 성공 후, idempotent) | 대기 (P3a 후) |
+| P3a | 오케스트레이터: collect→select→stage→publish→**push**→Actions배포. 날단위 멱등·crash-safe·no-email | ✅ **DONE·merged·pushed** (main==origin `ea8e29e`, 149 passed, 적대리뷰 2R + code-review 라운드). §2.7 |
+| P3b | 이메일 발송(Gmail, News+UseCase, push 성공 후, idempotent) | 🟢 **구현완료·190 passed·실 dry-run 스모크 통과·advisor+Codex 코드리뷰(없음), 머지대기**. branch `p3b-email`. ⚠️ **실 Gmail 발송은 미검증** — 사람이 `scripts/reauth_google.py`로 gmail.send 토큰 발급(브라우저) 후 실발송 스모크 필요. `nbs/email.py`+reauth+orchestrate seam. 스펙 §15 + plan 2026-07-03-p3b-email.md |
 | P3c | 스케줄러(systemd timer)·preflight·catchup·Reddit Chrome 무인기동 | 대기 (P3a 후) |
 | P3d | 관측성/알림(run.json 소비, 실패·누락·인증만료·floor미달 이메일, 일일 메트릭) | 대기 (P3b 후) |
 
