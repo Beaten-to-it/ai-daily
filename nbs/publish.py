@@ -1,4 +1,5 @@
 import re
+from . import assemble
 
 _TLDR_MARKER = re.compile(r"(?im)^\s*(?:#+\s*TL;DR|\*\*\s*TL;DR\s*\*\*)\s*$")
 
@@ -22,3 +23,13 @@ def extract_tldr(md, limit=500):
         if t:
             return t[:limit]
     return ""
+
+def _ok(gen):       return [r for r in gen.get("results", []) if r.get("status") == "ok"]
+def _evidence(gen): return [r for r in gen.get("results", []) if r.get("evidence_level") in ("confirmed", "short")]
+
+def decide(gen):
+    if len(_evidence(gen)) < assemble.FLOOR_N:
+        return "held", f"evidence floor not met ({len(_evidence(gen))} < {assemble.FLOOR_N}) — suspected mass source failure"
+    if len(_ok(gen)) == 0:
+        return "held", "generation produced 0 publishable posts (empty-day guard)"
+    return "publish", "ok"
