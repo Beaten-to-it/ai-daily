@@ -645,6 +645,17 @@ def test_promote_copies_and_deletes_stale(tmp_path, monkeypatch):
     assert not (root/"content"/"posts"/"2026-07-01-old.md").exists()   # stale deleted
     assert (root/"content"/"news"/"2026-07-01.md").exists() and (root/"content"/"usecase"/"2026-07-01.md").exists()
 
+def test_promote_drops_stale_usecase_when_staging_absent(tmp_path, monkeypatch):
+    # R2-#2: degraded rerun (no staging usecase) must remove a previously-published usecase
+    root=_init_repo(tmp_path, monkeypatch)
+    (root/"content"/"usecase"/"2026-07-01.md").write_text("---\ntitle: old U\n---\nx\n", encoding="utf-8")
+    _git_in(["add","-A"], root); _git_in(["commit","-qm","old usecase"], root)
+    gen=_gen2(); staging=_stage_posts(root, gen)
+    (staging/"usecase"/"2026-07-01.md").unlink()          # simulate degraded: no staging usecase
+    touched = publish.promote(gen, staging)
+    assert not (root/"content"/"usecase"/"2026-07-01.md").exists()
+    assert "content/usecase/2026-07-01.md" in touched
+
 def test_preflight_detects_dirty_writeset(tmp_path, monkeypatch):
     root=_init_repo(tmp_path, monkeypatch)
     (root/"data"/"published.csv").write_text("dirty\n", encoding="utf-8")
@@ -683,6 +694,9 @@ def _head_has(rel): return _git(["cat-file", "-e", f"HEAD:{rel}"]).returncode ==
 def date_writeset(gen):
     date = gen["date"]
     posts = {str(p.relative_to(ROOT)) for p in (ROOT/"content"/"posts").glob(f"{date}-*.md")}
+    # R2-#3: union with HEAD-tracked same-date posts so a worktree-deleted-but-tracked
+    # stale post is still in scope (glob only sees files present on disk).
+    posts |= set(_git(["ls-files", "--", f"content/posts/{date}-*.md"]).stdout.split())
     posts |= {f"content/posts/{r['slug']}.md" for r in _ok(gen)}
     return sorted(posts) + [f"content/news/{date}.md", f"content/usecase/{date}.md", "data/published.csv"]
 
@@ -703,8 +717,11 @@ def promote(gen, staging):
         _cp(staging/"posts"/f"{r['slug']}.md", ROOT/"content"/"posts"/f"{r['slug']}.md")
     _cp(staging/"news"/f"{date}.md", ROOT/"content"/"news"/f"{date}.md")
     uc = staging/"usecase"/f"{date}.md"
+    target_uc = ROOT/"content"/"usecase"/f"{date}.md"
     if uc.exists():
-        _cp(uc, ROOT/"content"/"usecase"/f"{date}.md")
+        _cp(uc, target_uc)
+    elif target_uc.exists():                        # R2-#2: degraded rerun — drop stale usecase
+        touched.append(str(target_uc.relative_to(ROOT))); target_uc.unlink()
     return touched
 
 def rollback(paths):
@@ -1031,7 +1048,11 @@ def run(date, *, do_commit=True):
         ledger_mod.rewrite_date(date, ledger_rows(gen), path=ROOT/"data"/"published.csv")
         commit_sha = None
         if do_commit:
-            if _git(["add", "-A", "--"] + ws).returncode != 0:
+            # R2-#1: `git add -- <pathspec>` fails (rc 128) on a ws path that neither exists
+            # nor is in HEAD (e.g. usecase on a degraded day). Add only real paths; keep full
+            # `ws` for the staged-subset check and rollback.
+            add_paths = [p for p in ws if (ROOT/p).exists() or _head_has(p)]
+            if _git(["add", "-A", "--"] + add_paths).returncode != 0:
                 raise RuntimeError("git add failed")
             staged = [l for l in _git(["diff","--cached","--name-only"]).stdout.splitlines() if l.strip()]
             if any(s not in ws for s in staged):
@@ -1106,8 +1127,8 @@ python3 -m nbs.publish --date "$DATE" --no-commit
 echo "--- publish.json ---"; cat "runs/$DATE/publish.json"
 echo "--- content added ---"; ls -1 content/posts/ | grep "$DATE" || true
 ls -1 "content/news/$DATE.md" "content/usecase/$DATE.md" 2>/dev/null || true
-echo "--- cleanup (date-scoped) ---"
-echo "git checkout -- content/news/$DATE.md 2>/dev/null; git clean -f -- content/posts/$DATE-*.md content/news/$DATE.md content/usecase/$DATE.md data/published.csv; git checkout -- data/published.csv 2>/dev/null || true"
+echo "--- cleanup (date-scoped; restores tracked, removes new untracked) ---"
+echo "git restore --staged --worktree -- content/posts/$DATE-*.md content/news/$DATE.md content/usecase/$DATE.md data/published.csv 2>/dev/null; git clean -f -- content/posts/$DATE-*.md content/news/$DATE.md content/usecase/$DATE.md data/published.csv"
 ```
 
 - [ ] **Step 3: Run the real smoke (Claude Code env — `claude -p` needs it; regenerating staging calls it)**
