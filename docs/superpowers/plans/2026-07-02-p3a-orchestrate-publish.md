@@ -641,13 +641,15 @@ def run(date, *, force=False, no_push=False, runner=None, now=None):
                     if not ok:
                         base["stages"]["publish"] = {"status": "failed", "reason": reason}
                         return finish("failed", f"publish: {reason}")
-                    pstatus = (_publish_state(date) or {}).get("status")
+                    pj = _publish_state(date) or {}
+                    pstatus = pj.get("status")
                     if pstatus not in ("published", "held", "failed"):
                         base["stages"]["publish"] = {"status": "failed", "reason": f"unknown publish status {pstatus!r}"}
                         return finish("failed", f"unknown publish status {pstatus!r}")
-                    base["stages"]["publish"] = {"status": pstatus, "reason": ""}
+                    preason = pj.get("reason", "")   # publish.py records the held/failed cause here
+                    base["stages"]["publish"] = {"status": pstatus, "reason": preason}
                     if pstatus != "published":
-                        return finish(pstatus, f"publish {pstatus}")   # held/failed -> no push
+                        return finish(pstatus, preason or f"publish {pstatus}")   # held/failed -> no push
                     break
                 ok, reason = _stage_ok(name, date, rc)
                 base["stages"][name] = {"status": "ok" if ok else "failed", "reason": reason}
