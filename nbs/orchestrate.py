@@ -1,5 +1,5 @@
 import fcntl
-import subprocess, json
+import subprocess, json, os, tempfile
 from contextlib import contextmanager
 from .config import ROOT, run_dir
 
@@ -67,3 +67,44 @@ def _stage_ok(name, date, rc):
     if name == "stage" and data.get("status") not in ("ok", "skip-empty"):
         return False, f"stage status {data.get('status')!r}"
     return True, ""
+
+def _mark_pushed(date, sha):
+    p = run_dir(date) / "publish.json"
+    st = _publish_state(date) or {"date": date, "status": "published"}
+    st["pushed"] = True
+    st["deployed_sha"] = sha
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, p)
+    except Exception:
+        os.path.exists(tmp) and os.remove(tmp); raise
+
+def _classify_push_failure(head):
+    # classify a FAILED `git push` by querying the live remote (never parse git stderr).
+    ls = _git(["ls-remote", "origin", "refs/heads/main"])
+    if ls.returncode != 0 or not ls.stdout.strip():
+        return "push_pending", None, "origin/main absent or ls-remote failed"
+    remote_sha = ls.stdout.split()[0]
+    if remote_sha == head:                       # push actually landed (client died post-update)
+        return "published", remote_sha, "push rc!=0 but origin/main already equals HEAD"
+    # non-fast-forward iff the remote tip is NOT an ancestor of our HEAD (origin diverged)
+    if _git(["merge-base", "--is-ancestor", remote_sha, "HEAD"]).returncode != 0:
+        return "push_rejected", None, f"origin/main diverged (remote {remote_sha[:12]} not ancestor of HEAD)"
+    return "push_pending", None, "push failed but origin is behind (transient)"
+
+def _push(date):
+    # returns (status, sha_or_None, reason). status ∈ {published, push_pending, push_rejected}
+    head = _git(["rev-parse", "HEAD"]).stdout.strip()
+    if _git(["push", "origin", "main"]).returncode != 0:
+        status, sha, reason = _classify_push_failure(head)
+        if status == "published":                # remote already at HEAD → record it
+            _mark_pushed(date, sha)
+            return "published", sha, reason
+        return status, None, reason
+    if _git(["rev-parse", "origin/main"]).stdout.strip() != head:
+        return "push_pending", None, "push reported success but origin/main did not advance"
+    _mark_pushed(date, head)
+    return "published", head, ""

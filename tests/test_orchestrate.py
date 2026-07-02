@@ -94,3 +94,57 @@ def test_default_runner_shape(monkeypatch):
     monkeypatch.setattr(orchestrate.subprocess, "run", fake_run)
     rc = orchestrate._default_runner("collect", "2026-07-01")
     assert rc==0 and calls["argv"]==["python3","-m","nbs.collect","--date","2026-07-01"]
+
+import os
+
+def _init_repo_with_remote(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)           # root = tmp_path/repo
+    bare = tmp_path/"remote.git"                      # SIBLING of root — outside the worktree
+    _git_in(["init","--bare","-q",str(bare)], tmp_path)
+    _git_in(["remote","add","origin",str(bare)], root)
+    _git_in(["branch","-M","main"], root)
+    return root, bare
+
+def test_push_success_marks_pushed(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    _publish_news(root, "2026-07-01", pushed=False)
+    status, sha, _ = orchestrate._push("2026-07-01")
+    assert status=="published" and sha
+    st = json.loads((root/"runs"/"2026-07-01"/"publish.json").read_text())
+    assert st["pushed"] is True and st["deployed_sha"]==sha
+
+def test_push_rejected_on_divergence(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    # seed origin/main with an unrelated commit so local push is non-fast-forward
+    other = tmp_path/"other"; _git_in(["clone","-q",str(bare),str(other)], tmp_path)
+    _git_in(["config","user.email","o@o"], other); _git_in(["config","user.name","o"], other)
+    (other/"x.txt").write_text("o\n"); _git_in(["add","-A"], other)
+    _git_in(["commit","-qm","other"], other); _git_in(["branch","-M","main"], other); _git_in(["push","-q","origin","main"], other)
+    _publish_news(root, "2026-07-01", pushed=False)
+    status, sha, _ = orchestrate._push("2026-07-01")
+    assert status=="push_rejected" and sha is None
+
+def test_mark_pushed_creates_when_absent(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    orchestrate._mark_pushed("2026-07-01", "deadbeef")
+    st = json.loads((root/"runs"/"2026-07-01"/"publish.json").read_text())
+    assert st["pushed"] is True and st["deployed_sha"]=="deadbeef" and st["status"]=="published"
+
+def test_classify_push_failure_discriminates(tmp_path, monkeypatch):
+    # discriminates the merge-base DIRECTION: a remote that is BEHIND (ancestor of HEAD) must be
+    # push_pending, not push_rejected. Reversing the is-ancestor args would break this case.
+    root=_init_repo(tmp_path, monkeypatch)
+    orig = orchestrate._git
+    def stub(stdout):
+        def g(args):
+            if args[:2]==["ls-remote","origin"]:
+                return type("R",(),{"returncode":0,"stdout":stdout})()
+            return orig(args)
+        monkeypatch.setattr(orchestrate, "_git", g)
+    A=_git_in(["rev-parse","HEAD"], root).stdout.strip()
+    (root/"b").write_text("b"); _git_in(["add","-A"], root); _git_in(["commit","-qm","B"], root)
+    C=_git_in(["rev-parse","HEAD"], root).stdout.strip()
+    stub(f"{C}\trefs/heads/main\n"); assert orchestrate._classify_push_failure(C)[0]=="published"     # equal
+    stub(f"{A}\trefs/heads/main\n"); assert orchestrate._classify_push_failure(C)[0]=="push_pending"  # behind (direction!)
+    stub("0"*40+"\trefs/heads/main\n"); assert orchestrate._classify_push_failure(C)[0]=="push_rejected"  # diverged
+    stub(""); assert orchestrate._classify_push_failure(C)[0]=="push_pending"                          # empty/unreachable
