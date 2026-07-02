@@ -1,6 +1,6 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-02 (P2b **DONE·머지 완료**. 다음 = **P2c**). `/clear` 후 새 세션은 이 문서(§6b 계약 + §7 P2c 절차) + 스펙 + P2a/P2b plan을 읽고 P2c부터 이어간다.
+> 마지막 갱신: 2026-07-02 (P2b DONE·머지. **P2c = 계획완료·구현대기**). `/clear` 후 새 세션은 이 문서(§2.6 P2c 재개점) + **P2c plan**(`docs/superpowers/plans/2026-07-02-p2c-promote-publish.md`) + 스펙 §15 "확정(P2c)"를 읽고 **구현부터** 이어간다.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
@@ -15,7 +15,7 @@
 | P1 | Hugo(PaperMod) 사이트 골격 + GitHub Actions Pages 배포 | ✅ DONE (라이브, 샘플글) |
 | P2a | 수집(RSS+X+Reddit) → claude -p 내용 중복판정·선별 → `selection.json` | ✅ DONE (merged, 20 tests) |
 | P2b | 전문 fetch(grounding 게이트) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | ✅ **DONE (merged, 80 tests)**. 적대리뷰 2R(Codex+Opus) 통과. 상세 §2.5 |
-| P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | 대기 (P2b 머지 후) |
+| P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | 🟡 **계획완료·구현대기** (plan 2R 리뷰 통과). §2.6 |
 | P3 | 자동화(스케줄러·preflight·catchup) + 이메일(idempotent) + 관측성/알림 + Reddit용 Chrome 기동 | 대기 |
 
 ## 2.5 P2b 완료 기록 (DONE — 참고용)
@@ -37,6 +37,27 @@
 **deferred (defer-safe, P2c 정리 대상):** ① 미앵커 `---` 분할이 parse_frontmatter/validate_blog_output/build_usecase 종료체크 3곳 공통 — fm 값에 `---`면 오분할(저확률·§5격리). 중앙 수정 권장. ② `_visible_text` 단일라인 붕괴(품질만). ③ stage rerun시 `fetched/` 미삭제(디버그 스크래치, 무해). ④ **floor 의미 = §6b 결정 필요**.
 
 **커버리지 주의:** 실스모크는 article-only. paper/sns/video fetch는 단위테스트만(reddit=Chrome off).
+
+## 2.6 P2c 재개점 (계획완료·구현대기 — **여기부터**)
+
+**상태:** brainstorm→스펙확정→writing-plans 끝. **구현 미착수**(사용자 "구현해" 트리거 대기 — 1순위 룰: 트리거 전 코드 금지).
+**브랜치:** `p2c-promote-publish` (main 미머지, 현재 체크아웃됨). HEAD `b47ca18`. main 대비 앞선 커밋 = 스펙 §15 확정(4커밋) + P2c plan(3커밋)뿐, **코드 0**.
+**plan(구현 청사진):** `docs/superpowers/plans/2026-07-02-p2c-promote-publish.md` — 12태스크 TDD. **적대리뷰 2R 통과**(스펙 §15: advisor+Codex 2R / plan: advisor+Codex 2R, R1 6BLOCK+7MAJOR→R2 3건 전부 반영). 바로 실행 가능 상태.
+**스펙 확정 위치:** 스펙 §15 "확정 (P2c, 2026-07-02...)" 블록 + §6b 계약.
+
+**P2c가 하는 일 (요약):** `runs/<date>/staging/` → `content/` 원자적 승격 + 완결성검사 + Hugo 빌드검증 + `data/published.csv` ledger 재구축 + **단일 로컬 commit(push 안 함 — 배포는 수동/P3)**.
+
+**확정된 핵심 설계 결정 (구현 시 그대로):**
+- **발행 게이트 2중**: evidence-floor(confirmed+short≥3, §4 소스장애감지) AND ok≥1(빈날 방지). `assemble.floor_ok`를 **evidence 기준으로 정렬**(현 publishable 기준 → 변경, P2b 테스트도 갱신).
+- **내부 링크 = Hugo `{{< relref "/posts/<slug>.md" >}}`** (P2b `build_news_index`의 `/posts/` root-relative는 baseURL `/ai-daily/`서 404 → 수정 필요. Task 4).
+- **date-scoped 원자성**: writeset= `content/posts/<date>-*.md` glob ∪ `git ls-files` ∪ ok타깃 + news/usecase/ledger. 순서=completeness(staging)→promote(스테일 삭제)→build-verify→ledger 재구축→`git add -A`(존재-or-HEAD만)→staged-subset 확인→`git diff --cached --quiet`(no-op 멱등) 아니면 commit. 실패 시 `rollback(ws)`=git restore(HEAD-tracked)+삭제(untracked), ledger 포함.
+- **usecase optional**: 실패해도 news+posts 발행, `publish.json.degraded`에 기록. build-verify는 content usecase 있을 때만 렌더 확인.
+- **ledger summary = `extract_tldr(md)`** (`## TL;DR`/`**TL;DR**` 관대파싱, 없으면 첫문단 폴백, 빈값이면 발행 실패). front matter는 **엄격 파서**(unquote+tags 리스트).
+- **관측성 = `runs/<date>/publish.json`** manifest(status published|held|failed, reason, promoted[], degraded, commit_sha).
+- **모듈**: 신규 `nbs/publish.py`. 수정 `assemble.floor_ok`/`build_news_index`, `models`(+parse_frontmatter_strict), `ledger`(+rewrite_date), `prompts/blog.md`(## TL;DR).
+
+**재개 절차:** ①`cd /home/beaten/project/NBs && export PATH="$HOME/.local/bin:$PATH"` ②`git branch --show-current`=`p2c-promote-publish` 확인, `python3 -m pytest -q`=80 passed 베이스라인 ③plan 읽기 ④사용자 "구현해" → **subagent-driven-development**(태스크마다 fresh subagent + 2단계 리뷰, 태스크 12개 순서대로) 또는 executing-plans ⑤전 태스크 그린 후 실 스모크(Claude env, `bash scripts/p2c_smoke.sh 2026-07-02`) → 최종 whole-branch 리뷰 → 머지.
+**주의:** 실 스모크는 `claude -p` 호출(staging 재생성) → **Claude Code env 필수**([[2026-07-02-claude-p-fails-under-codex-exec]]). 빌드/검증은 파이프로 감싸지 말 것([[2026-07-01-pipe-hides-build-failure]]).
 
 ## 3. 문서 위치
 - 스펙(SSOT): `docs/superpowers/specs/2026-07-01-nbs-news-blog-design.md`
