@@ -242,3 +242,24 @@ def test_run_rejects_bad_date(tmp_path, monkeypatch):
     root=_init_repo(tmp_path, monkeypatch)
     m = orchestrate.run("../evil", now=_fixed_now())
     assert m["status"]=="failed" and not (tmp_path/"evil").exists()
+
+def test_main_returns_exit_code(tmp_path, monkeypatch, capsys):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    monkeypatch.setattr(orchestrate, "run", lambda date, **kw: {"status":"held","stages":{},"reason":"floor","date":date})
+    code = orchestrate.main(["--date","2026-07-01"])
+    assert code == 1   # held -> 1
+
+def test_main_defaults_to_today(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(orchestrate, "run", lambda date, **kw: seen.update(date=date, kw=kw) or {"status":"published","stages":{},"reason":"","date":date})
+    monkeypatch.setattr(orchestrate, "_today", lambda: "2026-07-09")
+    orchestrate.main([])
+    assert seen["date"]=="2026-07-09" and seen["kw"]["force"] is False and seen["kw"]["no_push"] is False
+
+def test_main_passes_flags(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(orchestrate, "run", lambda date, **kw: seen.update(kw=kw) or {"status":"published","stages":{},"reason":"","date":date})
+    orchestrate.main(["--date","2026-07-01","--force","--no-push"])
+    assert seen["kw"]["force"] is True and seen["kw"]["no_push"] is True

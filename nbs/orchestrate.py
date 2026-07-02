@@ -1,5 +1,5 @@
 import fcntl
-import subprocess, json, os, tempfile, re
+import subprocess, json, os, tempfile, re, argparse
 from contextlib import contextmanager
 from datetime import datetime
 from .config import ROOT, run_dir
@@ -179,3 +179,21 @@ def run(date, *, force=False, no_push=False, runner=None, now=None):
     except Busy:
         base["status"] = "busy"; base["reason"] = "another run in progress"
         return base   # do not clobber the other run's run.json
+
+def _today():
+    return datetime.now(config.KST).strftime("%Y-%m-%d")
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="orchestrate")
+    ap.add_argument("--date", default=None)
+    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--no-push", action="store_true")
+    a = ap.parse_args(argv)
+    date = a.date or _today()
+    m = run(date, force=a.force, no_push=a.no_push)
+    push = (m.get("stages", {}) or {}).get("push", {}).get("status", "-")
+    print(f"[{m['status']}] {date} push={push} reason={m.get('reason','')}")
+    return _STATUS_EXIT.get(m["status"], 1)
+
+if __name__ == "__main__":
+    raise SystemExit(main())
