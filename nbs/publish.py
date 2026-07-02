@@ -146,3 +146,21 @@ def build_verify(gen):
         if (ROOT/"content"/"usecase"/f"{date}.md").exists() and not (out/"usecase"/date/"index.html").exists():
             errs.append(f"usecase page not rendered: usecase/{date}/index.html")
     return errs
+
+def ledger_rows(gen):
+    rows = []
+    for r in _ok(gen):
+        md = (ROOT/"content"/"posts"/f"{r['slug']}.md").read_text(encoding="utf-8")
+        summary = extract_tldr(md)
+        if not summary:
+            raise ValueError(f"empty ledger summary for {r['slug']} (protects §6 dedup)")
+        tags = parse_frontmatter_strict(md).get("tags") or []
+        rows.append({
+            "canonical_key": canonicalize_url(r.get("url", "")),
+            "event_key": r.get("event_key", ""), "date": gen["date"],
+            "title": r.get("title", ""), "url": r.get("url", ""), "source": r.get("source", ""),
+            "post_path": r.get("post_path", ""), "summary": summary,
+            "entities": "", "tags": ",".join(tags) if isinstance(tags, list) else str(tags),
+            "confidence": "",
+        })
+    return rows

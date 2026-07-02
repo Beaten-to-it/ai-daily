@@ -184,3 +184,25 @@ def test_build_verify_passes_when_all_rendered(tmp_path, monkeypatch):
     (root/"content"/"usecase"/"2026-07-01.md").write_text("---\ntitle: U\n---\nu\n", encoding="utf-8")
     monkeypatch.setattr(publish, "_hugo_build", lambda o: _render(o, "2026-07-01", ["2026-07-01-a","2026-07-01-b"], usecase=True))
     assert publish.build_verify(gen) == []
+
+import pytest
+def test_ledger_rows_fields(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch); gen=_gen2()
+    (root/"content"/"posts"/"2026-07-01-a.md").write_text(
+        "---\ntitle: A\ndate: 2026-07-01\ntags: [ai, model]\nsource_url: https://x/a\n"
+        "source_lang: en\nsource_type: article\nevidence_level: confirmed\nevent_key: a\n---\n## TL;DR\n- 요약 문장\n본문\n", encoding="utf-8")
+    (root/"content"/"posts"/"2026-07-01-b.md").write_text(
+        "---\ntitle: B\ndate: 2026-07-01\ntags: [x]\nsource_url: https://x/b\n"
+        "source_lang: en\nsource_type: article\nevidence_level: confirmed\nevent_key: b\n---\n첫 문단.\n", encoding="utf-8")
+    gen["results"][0]["title"]="A"; gen["results"][0]["source"]="OpenAI"
+    rows = publish.ledger_rows(gen)
+    ra = next(r for r in rows if r["event_key"]=="a")
+    assert ra["canonical_key"]=="https://x/a" and "요약 문장" in ra["summary"] and ra["tags"]=="ai,model"
+    assert ra["post_path"]=="posts/2026-07-01-a.md"
+    assert next(r for r in rows if r["event_key"]=="b")["summary"].startswith("첫 문단")
+
+def test_ledger_rows_raises_on_empty_summary(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch); gen={"date":"2026-07-01","results":[_okres("a")]}
+    (root/"content"/"posts"/"2026-07-01-a.md").write_text("---\ntitle: A\n---\n\n", encoding="utf-8")  # empty body
+    with pytest.raises(ValueError):
+        publish.ledger_rows(gen)
