@@ -4,6 +4,10 @@ defaultContentLanguage = "ko"
 title = "AI Daily"
 theme = "PaperMod"
 
+# KST 일간 발행: 콘텐츠 date는 오늘(KST)이지만 빌드 서버는 UTC라, KST 아침엔 오늘 글이
+# UTC 기준 미래로 잡혀 기본 buildFuture=false면 배포에서 누락된다. 오늘 에디션은 즉시 노출해야 하므로 켠다.
+buildFuture = true
+
 [taxonomies]
   tag = "tags"
 
