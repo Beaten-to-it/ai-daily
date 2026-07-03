@@ -160,3 +160,63 @@ def test_run_tick_tears_down_chrome_pid(monkeypatch):
                       chrome=lambda **k: {"pid": 777},
                       kill=lambda h: killed.__setitem__("pid", h["pid"]))
     assert killed["pid"] == 777   # only its own launched pid
+
+def test_check_alert_sends_once_when_unpublished(tmp_path, monkeypatch):
+    monkeypatch.setattr(schedule, "_alert_ledger", lambda: tmp_path / "alert_log.csv")
+    sent = {"n": 0}
+    rc = schedule.check_alert("2026-07-04",
+                              is_published=lambda d: False,
+                              sender=lambda date, reason: sent.__setitem__("n", sent["n"] + 1),
+                              waiter=lambda: None)
+    assert rc == 0 and sent["n"] == 1
+    # idempotent: second call same day does NOT resend
+    schedule.check_alert("2026-07-04", is_published=lambda d: False,
+                         sender=lambda date, reason: sent.__setitem__("n", sent["n"] + 1),
+                         waiter=lambda: None)
+    assert sent["n"] == 1
+
+def test_check_alert_no_send_when_published(tmp_path, monkeypatch):
+    monkeypatch.setattr(schedule, "_alert_ledger", lambda: tmp_path / "alert_log.csv")
+    sent = {"n": 0}
+    rc = schedule.check_alert("2026-07-04", is_published=lambda d: True,
+                              sender=lambda date, reason: sent.__setitem__("n", 1), waiter=lambda: None)
+    assert rc == 0 and sent["n"] == 0
+
+def test_check_alert_waits_for_busy_run_then_rechecks(tmp_path, monkeypatch):
+    # a run is in flight at alert time; after the bounded wait the run has published -> no alert
+    monkeypatch.setattr(schedule, "_alert_ledger", lambda: tmp_path / "alert_log.csv")
+    state = {"published": False}
+    def waiter(): state["published"] = True        # the wait "observes" the run finishing published
+    sent = {"n": 0}
+    schedule.check_alert("2026-07-04",
+                         is_published=lambda d: state["published"],
+                         sender=lambda date, reason: sent.__setitem__("n", 1),
+                         waiter=waiter)
+    assert sent["n"] == 0
+
+def test_send_alert_uses_gmail_primitives_not_run_email(monkeypatch):
+    # spec: the alert must NOT use email.run_email (returns not_published on the quiet-day
+    # condition -> would send nothing). Verify _send_alert = load_credentials + build_message + _gmail_send.
+    from nbs import email as em
+    calls = {"build": 0, "send": 0}
+    monkeypatch.setattr(em, "load_credentials", lambda path=None: "CREDS")
+    monkeypatch.setattr(em, "build_message", lambda *a, **k: calls.__setitem__("build", 1) or {"raw": "x", "message_id": "m"})
+    monkeypatch.setattr(em, "_gmail_send", lambda creds, msg, sender: calls.__setitem__("send", 1) or "gid")
+    monkeypatch.setattr(em, "run_email", lambda *a, **k: (_ for _ in ()).throw(AssertionError("run_email must not be called")))
+    schedule._send_alert("2026-07-04", "failed: boom")
+    assert calls == {"build": 1, "send": 1}
+
+def test_main_dispatches_check_alert(monkeypatch):
+    seen = {"n": 0}
+    monkeypatch.setattr(schedule, "check_alert", lambda date=None: seen.__setitem__("n", 1) or 0)
+    rc = schedule.main(["--check-alert", "--date", "2026-07-04"])
+    assert rc == 0 and seen["n"] == 1   # main dispatches to check_alert (also proves it's defined)
+
+def test_main_guard_is_last_line():
+    # Static regression for the __main__ NameError (Codex R2): running `python3 -m nbs.schedule`
+    # executes top-to-bottom and calls main() AT the guard, so the guard must be the file's final
+    # code — all defs above it. Import-based tests can't catch a misplaced guard; this can.
+    import inspect
+    lines = [ln for ln in inspect.getsource(schedule).splitlines() if ln.strip()]
+    assert lines[-1].strip() == "raise SystemExit(main())"
+    assert lines[-2].strip() == 'if __name__ == "__main__":'

@@ -1,4 +1,4 @@
-import os, subprocess, shutil, time, signal, argparse
+import os, subprocess, shutil, time, signal, argparse, csv
 from pathlib import Path
 from . import config
 from . import orchestrate
@@ -152,6 +152,79 @@ def main(argv=None):
     if a.check_alert:
         return check_alert(a.date)     # defined in Task 4
     return run_tick(a.date)
+
+def _alert_ledger():
+    return _email.config_dir() / "alert_log.csv"
+
+def _alert_sent(date):
+    # Only a SUCCESSFUL send suppresses a resend. An "error:" row must NOT count as delivered,
+    # else one failed attempt permanently blocks the alert for that day.
+    p = _alert_ledger()
+    if not p.exists():
+        return False
+    with open(p, newline="") as f:
+        return any(len(row) >= 2 and row[0] == date and row[1] == "sent" for row in csv.reader(f))
+
+def _record_alert(date, status):
+    p = _alert_ledger()
+    p.parent.mkdir(parents=True, exist_ok=True)   # the ledger's own dir (monkeypatched in tests)
+    try:
+        os.chmod(p.parent, 0o700)
+    except OSError:
+        pass
+    new = not p.exists()
+    with open(p, "a", newline="") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(["date", "status"])
+        w.writerow([date, status])
+    os.chmod(p, 0o600)
+
+def _wait_for_lock(timeout=300.0):
+    # If a run is in flight at alert time, wait (bounded) for it to release the lock, so we
+    # don't false-alarm a run that finishes just after 12:00. If it never releases within the
+    # bound the run is stuck — itself an alertable failure, so we return and let the check proceed.
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _probe_free():
+            return
+        time.sleep(5.0)
+
+def _last_run_reason(date):
+    p = config.run_dir(date) / "run.json"
+    if p.exists():
+        import json
+        try:
+            m = json.loads(p.read_text())
+            return f"{m.get('status','?')}: {m.get('reason','')}"
+        except Exception:
+            pass
+    return "no run.json (tick may not have run)"
+
+def _send_alert(date, reason):
+    creds = _email.load_credentials()
+    subject = f"[AI Daily] MISSED publish {date}"
+    body = f"ai-daily did not publish {date} by 12:00 KST.\nlast run: {reason}\n"
+    msg = _email.build_message(_email.EMAIL_SENDER, _email.DEFAULT_RECIPIENTS, subject,
+                               f"<pre>{body}</pre>", body)
+    _email._gmail_send(creds, msg, _email.EMAIL_SENDER)
+
+def check_alert(date=None, *, is_published=None, sender=None, waiter=None):
+    date = date or orchestrate._today()
+    is_published = is_published or _email.published
+    sender = sender or _send_alert
+    waiter = waiter or _wait_for_lock
+    waiter()                                  # let any in-flight run finish first (bounded)
+    if is_published(date):
+        return 0                              # published -> nothing to alert
+    if _alert_sent(date):
+        return 0                              # already alerted today -> idempotent
+    try:
+        sender(date, _last_run_reason(date))
+        _record_alert(date, "sent")           # record AFTER send succeeds
+    except Exception as e:
+        _record_alert(date, f"error:{str(e)[:80]}")
+    return 0
 
 if __name__ == "__main__":
     raise SystemExit(main())
