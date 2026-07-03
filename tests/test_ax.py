@@ -54,3 +54,50 @@ def test_build_ax_rejects_missing_front_matter():
     with pytest.raises(ValueError):
         assemble.build_ax([_res("2026-07-03-a")], "2026-07-03",
                           run=lambda p: '본문만 {{< relref "/posts/2026-07-03-a.md" >}}')
+
+
+# --- Task 2: stage ax wiring (§5 isolation) ----------------------------------
+
+from nbs import stage as stage_mod
+
+
+def _seed_selection(tmp_path, date, monkeypatch):
+    from nbs import config
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(stage_mod, "run_dir", lambda d: tmp_path / "runs" / d)
+    d = tmp_path / "runs" / date; d.mkdir(parents=True)
+    (d / "selection.json").write_text(_json.dumps({"items": [
+        {"event_key": "a", "url": "http://x", "source_type": "article", "title": "T"}]}), encoding="utf-8")
+    return d
+
+
+def _ok_gen(items, fetched, date):
+    from nbs.models import GenerationResult
+    r = GenerationResult(event_key="a", title="T", url="http://x", source="s", source_type="article",
+                         evidence_level="confirmed", status="ok",
+                         post_path="content/posts/2026-07-03-a.md", slug="2026-07-03-a", rank=1)
+    r._md = "---\nx: 1\n---\nbody"
+    return [r, r, r]  # >=FLOOR_N publishable so floor passes
+
+
+def _ok_fetch(it):
+    from nbs.models import FetchResult
+    return FetchResult(event_key=it["event_key"], url=it["url"], source_type="article",
+                       text="body", evidence_level="confirmed", via="t", fetch_ok=True)
+
+
+def test_stage_ax_isolated_failure_records_ax_error(tmp_path, monkeypatch):
+    d = _seed_selection(tmp_path, "2026-07-03", monkeypatch)
+    def boom_ax(results, date): raise RuntimeError("ax boom")
+    payload = stage_mod.run("2026-07-03", fetch=_ok_fetch, generate=_ok_gen,
+                            usecase=lambda r, dt: None, ax=boom_ax)
+    assert payload["ax_error"] == "ax boom"[:200]
+    assert payload["status"] == "ok"                       # ax failure did NOT abort
+    assert not (d / "staging" / "ax" / "2026-07-03.md").exists()
+
+
+def test_stage_writes_ax_when_ok(tmp_path, monkeypatch):
+    d = _seed_selection(tmp_path, "2026-07-03", monkeypatch)
+    stage_mod.run("2026-07-03", fetch=_ok_fetch, generate=_ok_gen,
+                  usecase=lambda r, dt: None, ax=lambda r, dt: "AX-MD")
+    assert (d / "staging" / "ax" / "2026-07-03.md").read_text() == "AX-MD"
