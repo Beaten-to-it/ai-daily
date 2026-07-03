@@ -199,12 +199,20 @@ def test_send_alert_uses_gmail_primitives_not_run_email(monkeypatch):
     # condition -> would send nothing). Verify _send_alert = load_credentials + build_message + _gmail_send.
     from nbs import email as em
     calls = {"build": 0, "send": 0}
+    captured = {}
     monkeypatch.setattr(em, "load_credentials", lambda path=None: "CREDS")
     monkeypatch.setattr(em, "build_message", lambda *a, **k: calls.__setitem__("build", 1) or {"raw": "x", "message_id": "m"})
-    monkeypatch.setattr(em, "_gmail_send", lambda creds, msg, sender: calls.__setitem__("send", 1) or "gid")
+    def fake_gmail_send(creds, msg, sender):
+        calls["send"] = 1
+        captured["sender"] = sender
+        return "gid"
+    monkeypatch.setattr(em, "_gmail_send", fake_gmail_send)
     monkeypatch.setattr(em, "run_email", lambda *a, **k: (_ for _ in ()).throw(AssertionError("run_email must not be called")))
     schedule._send_alert("2026-07-04", "failed: boom")
     assert calls == {"build": 1, "send": 1}
+    # Gmail API userId must be "me" (the proven-working path in email.py:398), not the email
+    # address — passing the address instead of "me" can 403 under 3-legged user OAuth.
+    assert captured["sender"] == "me"
 
 def test_main_dispatches_check_alert(monkeypatch):
     seen = {"n": 0}
