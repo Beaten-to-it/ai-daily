@@ -585,7 +585,7 @@ def _send_alert(date, reason):
     body = f"ai-daily did not publish {date} by 12:00 KST.\nlast run: {reason}\n"
     msg = _email.build_message(_email.EMAIL_SENDER, _email.DEFAULT_RECIPIENTS, subject,
                                f"<pre>{body}</pre>", body)
-    _email._gmail_send(creds, msg, _email.EMAIL_SENDER)
+    _email._gmail_send(creds, msg, "me")   # Gmail API userId="me" = authenticated account (email.py:398 proven path)
 
 def check_alert(date=None, *, is_published=None, sender=None, waiter=None):
     date = date or orchestrate._today()
