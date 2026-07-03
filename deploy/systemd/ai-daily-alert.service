@@ -1,0 +1,8 @@
+[Unit]
+Description=ai-daily quiet-day alert check
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/project/NBs
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -m nbs.schedule --check-alert

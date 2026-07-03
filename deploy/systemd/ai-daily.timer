@@ -1,0 +1,11 @@
+[Unit]
+Description=ai-daily publish window (07/09/11 KST)
+
+[Timer]
+OnCalendar=*-*-* 07:00:00 Asia/Seoul
+OnCalendar=*-*-* 09:00:00 Asia/Seoul
+OnCalendar=*-*-* 11:00:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target
