@@ -102,7 +102,8 @@ def date_writeset(gen):
     # stale post is still in scope (glob only sees files present on disk).
     posts |= set(_git(["ls-files", "--", f"content/posts/{date}-*.md"]).stdout.split())
     posts |= {f"content/posts/{r['slug']}.md" for r in _ok(gen)}
-    return sorted(posts) + [f"content/news/{date}.md", f"content/usecase/{date}.md", "data/published.csv"]
+    return sorted(posts) + [f"content/news/{date}.md", f"content/usecase/{date}.md",
+                            f"content/ax/{date}.md", "data/published.csv"]
 
 def preflight_clean(paths):
     out = _git(["status", "--porcelain", "--"] + paths).stdout
@@ -126,6 +127,12 @@ def promote(gen, staging):
         _cp(uc, target_uc)
     elif target_uc.exists():                        # R2-#2: degraded rerun — drop stale usecase
         touched.append(str(target_uc.relative_to(ROOT))); target_uc.unlink()
+    ax = staging/"ax"/f"{date}.md"
+    target_ax = ROOT/"content"/"ax"/f"{date}.md"
+    if ax.exists():
+        _cp(ax, target_ax)
+    elif target_ax.exists():                        # degraded/rerun — drop stale ax
+        touched.append(str(target_ax.relative_to(ROOT))); target_ax.unlink()
     return touched
 
 def rollback(paths):
@@ -160,6 +167,8 @@ def build_verify(gen):
                 errs.append(f"news missing subpath href for {slug}")
         if (ROOT/"content"/"usecase"/f"{date}.md").exists() and not (out/"usecase"/date/"index.html").exists():
             errs.append(f"usecase page not rendered: usecase/{date}/index.html")
+        if (ROOT/"content"/"ax"/f"{date}.md").exists() and not (out/"ax"/date/"index.html").exists():
+            errs.append(f"ax page not rendered: ax/{date}/index.html")
     return errs
 
 def ledger_rows(gen):
@@ -187,6 +196,7 @@ def _write_manifest(date, payload):
 def _degraded(gen):
     ok, ev = len(_ok(gen)), len(_evidence(gen)); d = {}
     if gen.get("usecase_error"): d["usecase"] = gen["usecase_error"]
+    if gen.get("ax_error"): d["ax"] = gen["ax_error"]
     if ok < ev or ok < assemble.FLOOR_N: d["generation_failed_count"] = ev - ok
     return d
 

@@ -101,3 +101,49 @@ def test_stage_writes_ax_when_ok(tmp_path, monkeypatch):
     stage_mod.run("2026-07-03", fetch=_ok_fetch, generate=_ok_gen,
                   usecase=lambda r, dt: None, ax=lambda r, dt: "AX-MD")
     assert (d / "staging" / "ax" / "2026-07-03.md").read_text() == "AX-MD"
+
+
+# --- Task 3: publish ax touchpoints ------------------------------------------
+
+from pathlib import Path
+
+
+def test_writeset_includes_ax():
+    from nbs import publish as P
+    ws = P.date_writeset({"date": "2026-07-03", "results": []})
+    assert "content/ax/2026-07-03.md" in ws
+
+
+def test_degraded_includes_ax_error():
+    from nbs import publish as P
+    assert P._degraded({"date": "2026-07-03", "results": [], "ax_error": "ax boom"}).get("ax") == "ax boom"
+
+
+def test_promote_copies_ax_optional(tmp_path, monkeypatch):
+    from nbs import publish as P
+    monkeypatch.setattr(P, "ROOT", tmp_path)
+    (tmp_path / "content" / "posts").mkdir(parents=True)
+    (tmp_path / "content" / "news").mkdir(parents=True)
+    staging = tmp_path / "staging"
+    for sub in ("posts", "news", "ax"):
+        (staging / sub).mkdir(parents=True)
+    (staging / "news" / "2026-07-03.md").write_text("news")
+    (staging / "ax" / "2026-07-03.md").write_text("axmd")
+    touched = P.promote({"date": "2026-07-03", "results": []}, staging)
+    assert (tmp_path / "content" / "ax" / "2026-07-03.md").read_text() == "axmd"
+    assert "content/ax/2026-07-03.md" in touched
+
+
+def test_build_verify_flags_missing_ax_page(tmp_path, monkeypatch):
+    # implementer must not omit the build_verify ax check — mock hugo, render news but NOT ax
+    from nbs import publish as P
+    monkeypatch.setattr(P, "ROOT", tmp_path)
+    (tmp_path / "content" / "ax").mkdir(parents=True)
+    (tmp_path / "content" / "ax" / "2026-07-03.md").write_text("ax", encoding="utf-8")
+    def fake_build(outdir):
+        o = Path(outdir); (o / "news" / "2026-07-03").mkdir(parents=True)
+        (o / "news" / "2026-07-03" / "index.html").write_text("<html></html>")
+        return 0   # deliberately does NOT create ax/2026-07-03/index.html
+    monkeypatch.setattr(P, "_hugo_build", fake_build)
+    errs = P.build_verify({"date": "2026-07-03", "results": []})
+    assert any("ax page not rendered" in e for e in errs)
