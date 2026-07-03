@@ -1,0 +1,9 @@
+[Unit]
+Description=ai-daily quiet-day alert (12:00 KST)
+
+[Timer]
+OnCalendar=*-*-* 12:00:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target
