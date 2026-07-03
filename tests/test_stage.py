@@ -34,7 +34,7 @@ def _fake_gen(items, fetched_map, date, **kw):
 def test_stage_writes_staging_and_generationjson(rundir):
     date="2026-07-02"; _write_selection(rundir, date, 3)
     out=stage.run(date, fetch=_fake_fetch, generate=_fake_gen,
-                  usecase=lambda results,d: "---\ntitle: U\n---\nu\n")
+                  usecase=lambda results,d: "---\ntitle: U\n---\nu\n", ax=lambda r,d:None)
     d=rundir(date)
     assert (d/"staging"/"posts"/f"{date}-k0.md").exists()
     assert (d/"staging"/"news"/f"{date}.md").exists()
@@ -44,7 +44,7 @@ def test_stage_writes_staging_and_generationjson(rundir):
 
 def test_stage_floor_failed_writes_no_news(rundir):
     date="2026-07-03"; _write_selection(rundir, date, 2)
-    out=stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=lambda r,d:"x")
+    out=stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=lambda r,d:"x", ax=lambda r,d:None)
     d=rundir(date)
     assert out["floor_failed"] is True
     assert not (d/"staging"/"news"/f"{date}.md").exists()
@@ -54,15 +54,15 @@ def test_stage_rerun_clears_stale_staging(rundir):
     # success (3) then rerun same date below floor (2) must remove old news
     date="2026-07-05"
     _write_selection(rundir, date, 3)
-    stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=lambda r,d:"---\nt\n---\nu\n")
+    stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=lambda r,d:"---\nt\n---\nu\n", ax=lambda r,d:None)
     assert (rundir(date)/"staging"/"news"/f"{date}.md").exists()
     _write_selection(rundir, date, 2)
-    stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=lambda r,d:"x")
+    stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=lambda r,d:"x", ax=lambda r,d:None)
     assert not (rundir(date)/"staging"/"news"/f"{date}.md").exists()
 
 def test_stage_skips_when_zero_items(rundir):
     date="2026-07-04"; _write_selection(rundir, date, 0)
-    out=stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=lambda r,d:"x")
+    out=stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=lambda r,d:"x", ax=lambda r,d:None)
     assert out["status"]=="skip-empty"
 
 def _gen_respecting_exclude(items, fetched_map, date, **kw):
@@ -88,7 +88,7 @@ def test_stage_rejects_unsafe_event_key(rundir):
     items=[_it("good-1",1), _it("../evil",2), _it(longkey,3)]
     (d/"selection.json").write_text(json.dumps({"date":date,"items":items,
         "selected_count":3,"skipped_count":0,"generated_with":"test"}), encoding="utf-8")
-    out=stage.run(date, fetch=_fake_fetch, generate=_gen_respecting_exclude, usecase=lambda r,d:"x")
+    out=stage.run(date, fetch=_fake_fetch, generate=_gen_respecting_exclude, usecase=lambda r,d:"x", ax=lambda r,d:None)
     status={r["event_key"]:r["status"] for r in out["results"]}
     assert status["good-1"]=="ok"                                    # valid item unaffected
     assert status["../evil"]=="excluded" and status[longkey]=="excluded"  # unsafe + overlong isolated
@@ -99,7 +99,7 @@ def test_stage_usecase_failure_is_isolated(rundir):
     # §5: a usecase claude -p failure must NOT abort the run — manifest + posts + news survive
     date="2026-07-06"; _write_selection(rundir, date, 3)
     def boom(results, d): raise ValueError("usecase output missing front matter")
-    out=stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=boom)
+    out=stage.run(date, fetch=_fake_fetch, generate=_fake_gen, usecase=boom, ax=lambda r,d:None)
     d=rundir(date)
     assert (d/"generation.json").exists()                       # manifest still written
     assert out["published_count"]==3 and out["floor_failed"] is False

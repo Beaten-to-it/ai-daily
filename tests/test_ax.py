@@ -56,6 +56,20 @@ def test_build_ax_rejects_missing_front_matter():
                           run=lambda p: '본문만 {{< relref "/posts/2026-07-03-a.md" >}}')
 
 
+def test_gate_pass_body_is_email_safe():
+    # positive seam (advisor): gate condition (c) means gate-pass ⟹ email-safe. A body whose
+    # only shortcode is the angle relref build_ax accepts must survive email.rewrite_relref
+    # (no raise) — guards against the two mirrored-but-separate regexes drifting apart.
+    from nbs import email as em
+    results = [_res("2026-07-03-a")]
+    body = '오픈AI 지분 소식 [자세히]({{< relref "/posts/2026-07-03-a.md" >}}).'
+    md = assemble.build_ax(results, "2026-07-03", run=lambda p: _fm(body))   # passes the gate
+    ax_body = md.split("---", 2)[2]                                          # strip front matter
+    out = em.rewrite_relref(ax_body)                                        # must NOT raise
+    assert "https://beaten-to-it.github.io/ai-daily/posts/2026-07-03-a/" in out
+    assert "relref" not in out
+
+
 # --- Task 2: stage ax wiring (§5 isolation) ----------------------------------
 
 from nbs import stage as stage_mod
