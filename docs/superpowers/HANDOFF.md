@@ -1,6 +1,6 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-03 저녁. **main==origin `4e8c80c`, 206 passed.** 오늘 한 것: **P3b(이메일) merged·pushed** + **첫 실 발행 2026-07-03(뉴스 14글 라이브)** + **AX 경영 섹션 신설·라이브** + buildFuture·AX타임아웃 fix. **다음 재개점 = P3c(스케줄러) brainstorm.** 남은 즉시항목: ①**메일 실발송** — 사람이 `scripts/reauth_google.py`로 gmail.send 토큰 발급(브라우저, client_secret을 `~/.config/ai-daily/`에) 후 `python3 -m nbs.email --date <d>`. ~~②generate.py title-YAML sanitize~~ **✅ DONE** (branch `fix/generate-title-yaml-sanitize`, `_sanitize_title` at `_strip_fences` seam=blog/usecase/ax 공통, Hugo 0.163.3 RED→GREEN 실증, advisor+Codex xhigh 2R, 214 passed). 상세 = 아래 §2.8 오늘 실황.
+> 마지막 갱신: 2026-07-03 밤. **main==origin `997dd11`, 214 passed.** 오늘 한 것: **P3b(이메일) merged·pushed·실발송검증** + **첫 실 발행 2026-07-03(뉴스 14글 라이브)** + **AX 경영 섹션 신설·라이브** + buildFuture·AX타임아웃 fix + **title-YAML sanitize fix**. **다음 재개점 = P3c(스케줄러) brainstorm.** 즉시항목 전부 ✅: ~~①메일 실발송~~ **DONE**(newsNblog OAuth Desktop client_secret 재사용→`~/.config/ai-daily/`에 0600 배치, 사람이 reauth로 gmail.send 토큰 발급, 실발송 성공 gmail id `19f280cc4d145929`, 재실행=`already_sent` 멱등 확인). ~~②generate.py title-YAML sanitize~~ **DONE**(branch `fix/generate-title-yaml-sanitize`, `_sanitize_title` at `_strip_fences` seam=blog/usecase/ax 공통, Hugo 0.163.3 RED→GREEN 실증, advisor+Codex xhigh 2R, 214 passed). 상세 = 아래 §2.8 오늘 실황.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
@@ -17,7 +17,7 @@
 | P2b | 전문 fetch(grounding 게이트) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | ✅ **DONE (merged, 80 tests)**. 적대리뷰 2R(Codex+Opus) 통과. 상세 §2.5 |
 | P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | ✅ **DONE·머지** (main, 117 tests, 적대리뷰 2R). §2.6 |
 | P3a | 오케스트레이터: collect→select→stage→publish→**push**→Actions배포. 날단위 멱등·crash-safe·no-email | ✅ **DONE·merged·pushed** (main==origin `ea8e29e`, 149 passed, 적대리뷰 2R + code-review 라운드). §2.7 |
-| P3b | 이메일 발송(Gmail, News+UseCase, push 성공 후, idempotent) | ✅ **DONE·merged·pushed**. ⚠️ **실 Gmail 발송만 미검증** — reauth 토큰(사람) 후 발송. `nbs/email.py`+`scripts/reauth_google.py`+orchestrate seam. 스펙 §15 + plan. |
+| P3b | 이메일 발송(Gmail, News+UseCase, push 성공 후, idempotent) | ✅ **DONE·merged·pushed·실발송검증(2026-07-03)**. gmail id `19f280cc4d145929`, 재실행=already_sent. `nbs/email.py`+`scripts/reauth_google.py`+orchestrate seam. 스펙 §15 + plan. |
 | **AX 경영** | News·UseCase 평행 3번째 1급 산출물(경영자 톤 daily synthesis) | ✅ **DONE·merged·pushed·라이브** `/ax/2026-07-03/`. `prompts/ax.md`+`assemble.build_ax`(결정적 grounding 게이트)+stage/publish/hugo(menu+mainSections)/email 3섹션. 스펙 §16 + plan. |
 | P3c | 스케줄러(systemd timer)·preflight·catchup·Reddit Chrome 무인기동 | 🔵 **다음 재개점** (brainstorm부터) |
 | P3d | 관측성/알림(run.json 소비, 실패·누락·인증만료·floor미달 이메일, 일일 메트릭) | 대기 (P3b 후) |
@@ -91,7 +91,7 @@
 
 **전부 merged·pushed. main==origin `4e8c80c`, 206 passed. 다음 재개점 = P3c brainstorm.**
 
-- **P3b 이메일 (DONE):** `nbs/email.py`(git-authoritative 발송게이트 `git cat-file origin/main:content/news`, gmail.send 단일권한 토큰·시크릿 레포밖 `~/.config/ai-daily/`, multipart, href/헤더 인젝션 방어, 날짜게이트 ledger) + `scripts/reauth_google.py` + orchestrate seam(published/skipped시 non-fatal, `--no-push` 미호출). 이제 **AX 포함 3섹션**(News+UseCase+AX). ⚠️ **실 Gmail 발송 미검증** — 저녁에 사람이 reauth 토큰 발급(브라우저) 후.
+- **P3b 이메일 (DONE):** `nbs/email.py`(git-authoritative 발송게이트 `git cat-file origin/main:content/news`, gmail.send 단일권한 토큰·시크릿 레포밖 `~/.config/ai-daily/`, multipart, href/헤더 인젝션 방어, 날짜게이트 ledger) + `scripts/reauth_google.py` + orchestrate seam(published/skipped시 non-fatal, `--no-push` 미호출). 이제 **AX 포함 3섹션**(News+UseCase+AX). ✅ **실 Gmail 발송 검증됨** — newsNblog OAuth Desktop client_secret 재사용(project `gen-lang-client-0261281707`, `~/.config/ai-daily/client_secret.json` 0600) + 사람 reauth로 gmail.send 토큰 → `python3 -m nbs.email --date 2026-07-03` status:sent(gmail id `19f280cc4d145929`), 재실행 already_sent(멱등 OK), `email_delivery_log.csv` 기록. **토큰·시크릿은 레포밖 `~/.config/ai-daily/`(0600), 커밋 안 됨.**
 - **첫 실 발행 2026-07-03 (라이브):** collect 138→select 16→stage 14ok/2타임아웃(격리)→publish→push. `/news/2026-07-03/` 등 라이브. **실 E2E가 유닛 못잡은 버그 2개 노출:**
   - **buildFuture(수정·`ca02542`):** KST 아침 실행 시 date=오늘(KST)이 UTC 빌드서버 기준 미래 → Hugo 기본 `buildFuture=false`가 오늘 글 제외(로컬 build_verify 실패+배포 누락). `hugo.toml buildFuture=true`. **P3c 스케줄러 필수 전제**(매 KST 아침 재발).
   - **✅ generate.py title-YAML (해결):** claude -p가 title에 straight `"` 넣어 생성(예 `title: "A"는 B`) → 우리 parser 통과하나 Hugo strict YAML 거부(build 실패). `_sanitize_title`를 **`_strip_fences` 공통 seam**(blog/usecase/ax 3경로 공유)에 접어 title 값을 single-quoted YAML scalar로 재방출. 들여쓰기/`title :`(공백)/block scalar(`>``|`)/single-quote apostrophe(`''` un-escape, 멱등) 처리. **Hugo 0.163.3 실파서 RED→GREEN 실증**(broken rc=1 → sanitized rc=0). advisor+Codex xhigh 2R(R1 1 BLOCK+2 MAJOR fix, R2 clean), 214 passed. branch `fix/generate-title-yaml-sanitize`.
