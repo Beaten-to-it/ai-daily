@@ -56,13 +56,14 @@ def published(date: str) -> bool:
     return publish._git(["cat-file", "-e", f"{_ORIGIN}:content/news/{date}.md"]).returncode == 0
 
 
-def read_content(date: str) -> tuple[str, str | None]:
-    """Return (news_md, usecase_md_or_None) read from origin/main — same ref as the gate."""
+def read_content(date: str) -> tuple[str, str | None, str | None]:
+    """Return (news_md, usecase_md_or_None, ax_md_or_None) — all read from origin/main (gate ref)."""
     news = _origin_show(f"content/news/{date}.md")
     if news is None:
         raise FileNotFoundError(f"origin/main has no content/news/{date}.md")
-    usecase = _origin_show(f"content/usecase/{date}.md")   # None => news-only
-    return news, usecase
+    usecase = _origin_show(f"content/usecase/{date}.md")   # None => omit section
+    ax = _origin_show(f"content/ax/{date}.md")             # None => omit section
+    return news, usecase, ax
 
 
 # --- preprocess (front-matter strip, relref->absolute, subject) --------------
@@ -376,12 +377,14 @@ def run_email(date, *, to="", dry_run=False, force=False, run_id=None) -> dict:
     if not published(date):
         out["status"] = "not_published"; out["reason"] = "origin/main has no news for date"
         return out
-    news_md, usecase_md = read_content(date)
+    news_md, usecase_md, ax_md = read_content(date)
     subject = subject_for(news_md, date)
     web_url = f"{config.SITE_BASEURL.rstrip('/')}/news/{date}/"
     body_md = preprocess(news_md)
     if usecase_md is not None:
         body_md += "\n\n---\n\n" + preprocess(usecase_md)
+    if ax_md is not None:
+        body_md += "\n\n---\n\n" + preprocess(ax_md)
     html_body = render_html(body_md, subject, web_url)
     text_body = render_text(body_md, web_url)
     recipients = resolve_recipients(to)

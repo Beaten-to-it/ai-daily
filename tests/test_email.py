@@ -89,9 +89,10 @@ def test_read_content_from_origin_main(tmp_path, monkeypatch):
     _publish_day(work, "2026-07-03", usecase=True)
     # mutate working tree AFTER push: read must come from origin/main, not disk
     (work / "content" / "news" / "2026-07-03.md").write_text("TAMPERED", encoding="utf-8")
-    news, uc = em.read_content("2026-07-03")
+    news, uc, ax = em.read_content("2026-07-03")
     assert "News" in news and "TAMPERED" not in news
     assert uc is not None and "UseCase" in uc
+    assert ax is None   # _publish_day writes no ax
 
 
 def test_read_content_news_only_when_no_usecase(tmp_path, monkeypatch):
@@ -99,8 +100,20 @@ def test_read_content_news_only_when_no_usecase(tmp_path, monkeypatch):
     work = _init_repo_with_origin(tmp_path)
     monkeypatch.setattr(publish, "ROOT", work)
     _publish_day(work, "2026-07-03", usecase=False)
-    news, uc = em.read_content("2026-07-03")
-    assert uc is None
+    news, uc, ax = em.read_content("2026-07-03")
+    assert uc is None and ax is None
+
+
+def test_read_content_includes_ax(tmp_path, monkeypatch):
+    from nbs import email as em, publish
+    work = _init_repo_with_origin(tmp_path)
+    monkeypatch.setattr(publish, "ROOT", work)
+    _publish_day(work, "2026-07-03", usecase=True)
+    (work / "content" / "ax").mkdir(parents=True)
+    (work / "content" / "ax" / "2026-07-03.md").write_text("---\ntitle: AX\n---\n경영 본문\n", encoding="utf-8")
+    _git(work, "add", "-A"); _git(work, "commit", "-m", "ax"); _git(work, "push", "origin", "HEAD:refs/heads/main")
+    news, uc, ax = em.read_content("2026-07-03")
+    assert ax is not None and "경영 본문" in ax
 
 
 # --- Task 3: preprocess ------------------------------------------------------
