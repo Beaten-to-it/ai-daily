@@ -147,3 +147,12 @@ def test_build_verify_flags_missing_ax_page(tmp_path, monkeypatch):
     monkeypatch.setattr(P, "_hugo_build", fake_build)
     errs = P.build_verify({"date": "2026-07-03", "results": []})
     assert any("ax page not rendered" in e for e in errs)
+
+
+# --- Task 4: hugo.toml menu + mainSections -----------------------------------
+
+def test_hugo_config_has_ax_section_and_menu():
+    from nbs import config as _cfg
+    toml = (Path(_cfg.ROOT) / "hugo.toml").read_text(encoding="utf-8")
+    assert '"ax"' in toml.split("mainSections")[1].split("]")[0]   # ax in mainSections
+    assert 'url = "ax/"' in toml                                    # menu entry
