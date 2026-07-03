@@ -126,3 +126,37 @@ def test_run_tick_delegates_and_propagates_exit(monkeypatch):
     rc = schedule.run_tick("2026-07-04",
                            orchestrate_run=lambda date, **k: {"status": "published"})
     assert rc == 0   # orchestrate _STATUS_EXIT["published"] == 0
+
+def test_ensure_chrome_ready_returns_pid():
+    launched = {"n": 0}
+    def fake_launch(): launched["n"] += 1; return 4242
+    calls = {"n": 0}
+    def fake_probe():           # not ready first call, ready second
+        calls["n"] += 1; return calls["n"] >= 2
+    h = schedule.ensure_chrome(launcher=fake_launch, probe=fake_probe, timeout=5.0)
+    assert h == {"pid": 4242} and launched["n"] == 1
+
+def test_ensure_chrome_degrades_when_bridge_never_ready():
+    killed = {"pid": None}
+    h = schedule.ensure_chrome(launcher=lambda: 99, probe=lambda: False,
+                               killer=lambda handle: killed.__setitem__("pid", handle["pid"]), timeout=0.05)
+    assert h is None and killed["pid"] == 99     # timed out -> kill launched chrome, degrade
+
+def test_run_tick_launches_chrome_only_when_reddit_ok(monkeypatch):
+    monkeypatch.setattr(schedule, "_probe_free", lambda: True)
+    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": True, "reason": "", "reddit_ok": False})
+    launched = {"n": 0}
+    schedule.run_tick("2026-07-04",
+                      orchestrate_run=lambda d, **k: {"status": "published"},
+                      chrome=lambda **k: launched.__setitem__("n", 1) or {"pid": 1})
+    assert launched["n"] == 0    # reddit_ok False -> no Chrome
+
+def test_run_tick_tears_down_chrome_pid(monkeypatch):
+    monkeypatch.setattr(schedule, "_probe_free", lambda: True)
+    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": True, "reason": "", "reddit_ok": True})
+    killed = {"pid": None}
+    schedule.run_tick("2026-07-04",
+                      orchestrate_run=lambda d, **k: {"status": "published"},
+                      chrome=lambda **k: {"pid": 777},
+                      kill=lambda h: killed.__setitem__("pid", h["pid"]))
+    assert killed["pid"] == 777   # only its own launched pid

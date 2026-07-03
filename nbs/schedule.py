@@ -1,7 +1,10 @@
-import os, subprocess, shutil, argparse
+import os, subprocess, shutil, time, signal, argparse
 from pathlib import Path
 from . import config
 from . import orchestrate
+from . import email as _email
+
+_CHROME_PROFILE = _email.config_dir() / "chrome-profile"
 
 def _git(root, *args):
     return subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True)
@@ -60,13 +63,71 @@ def _probe_free():
     except orchestrate.Busy:
         return False
 
-def run_tick(date=None, *, orchestrate_run=None, pre=None):
+def _launch_chrome():
+    # Dedicated automation profile (isolated from daily browsing). Display env is pinned by
+    # the systemd unit (Environment=DISPLAY=:0 ...). start_new_session=True puts chrome in its
+    # OWN process group so teardown can reap the whole tree (chrome forks a browser + renderers;
+    # SIGTERM to just the launcher pid orphans children that keep the profile's SingletonLock,
+    # wedging every subsequent launch -> Reddit silently dead forever). Returns the launched pid.
+    p = subprocess.Popen(
+        ["google-chrome", f"--user-data-dir={_CHROME_PROFILE}",
+         "--no-first-run", "--no-default-browser-check", "--start-minimized"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    return p.pid
+
+def _bridge_ready():
+    # opencli talks to Chrome via the Browser-Bridge extension (NOT a debug port). Ready iff a
+    # cheap opencli call does NOT emit BROWSER_CONNECT. (collect.py uses the same signal.)
+    # Bounded + errors swallowed so a hung/broken opencli can NEVER block the tick.
+    if not shutil.which("opencli"):
+        return False
+    try:
+        r = subprocess.run(["opencli", "reddit", "subreddit", "test", "--limit", "1", "-f", "json"],
+                           capture_output=True, text=True, timeout=15)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return "BROWSER_CONNECT" not in (r.stdout + r.stderr)
+
+def _kill(handle):
+    # Kill the whole process group WE started (dedicated launch, start_new_session) so chrome's
+    # children die too and release the profile lock. Still "only ours" — never touches a
+    # browser another run/human started.
+    if handle and handle.get("pid"):
+        try:
+            os.killpg(os.getpgid(handle["pid"]), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+def ensure_chrome(*, launcher=_launch_chrome, probe=_bridge_ready, killer=_kill, timeout=30.0):
+    # MUST NEVER raise or hang the caller — Reddit must never block the daily publish. Any
+    # launcher/probe failure or timeout => tear down our Chrome (if launched) and degrade to
+    # RSS+X by returning None.
+    pid = None
+    try:
+        pid = launcher()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if probe():
+                return {"pid": pid}
+            time.sleep(1.0)
+    except Exception:
+        pass
+    if pid is not None:
+        try:
+            killer({"pid": pid})   # bridge never came up / error -> degrade, don't hang the run
+        except Exception:
+            pass                   # even teardown must not raise out of ensure_chrome
+    return None
+
+def run_tick(date=None, *, orchestrate_run=None, pre=None, chrome=None, kill=None):
     # IMPORTANT: default seams are None and resolved to module globals at CALL time, so that
     # `monkeypatch.setattr(schedule, "preflight", ...)` in tests actually takes effect. A
     # keyword default like `pre=preflight` binds the ORIGINAL function object at def time and
     # would ignore the monkeypatch (and on the dev box run real preflight -> launch real Chrome).
     orchestrate_run = orchestrate_run or orchestrate.run
     pre = pre or preflight
+    chrome = chrome or ensure_chrome
+    kill = kill or _kill
     date = date or orchestrate._today()
     if not _probe_free():
         return BUSY_EXIT
@@ -75,7 +136,11 @@ def run_tick(date=None, *, orchestrate_run=None, pre=None):
         # hard fail: abort THIS tick (no partial writes); next tick retries.
         print(f"[preflight] abort: {pf['reason']}")
         return 2
-    manifest = orchestrate_run(date)
+    handle = chrome() if pf["reddit_ok"] else None   # launch BEFORE orchestrate (collect connects to it)
+    try:
+        manifest = orchestrate_run(date)
+    finally:
+        kill(handle)                                  # tear down only our own pid group
     status = (manifest or {}).get("status", "failed")
     return orchestrate._STATUS_EXIT.get(status, 1)
 
