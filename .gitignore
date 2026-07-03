@@ -22,5 +22,6 @@ secrets/
 # P2 run scratch + python
 runs/
 .orchestrate.lock
+.schedule.lock
 __pycache__/
 .pytest_cache/

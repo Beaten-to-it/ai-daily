@@ -1,4 +1,4 @@
-import os, subprocess, shutil, time, signal, argparse, csv
+import os, subprocess, shutil, time, signal, argparse, csv, fcntl, contextlib
 from pathlib import Path
 from . import config
 from . import orchestrate
@@ -86,7 +86,7 @@ def _bridge_ready():
                            capture_output=True, text=True, timeout=15)
     except (subprocess.TimeoutExpired, OSError):
         return False
-    return "BROWSER_CONNECT" not in (r.stdout + r.stderr)
+    return r.returncode == 0 and "BROWSER_CONNECT" not in (r.stdout + r.stderr)
 
 def _kill(handle):
     # Kill the whole process group WE started (dedicated launch, start_new_session) so chrome's
@@ -119,6 +119,30 @@ def ensure_chrome(*, launcher=_launch_chrome, probe=_bridge_ready, killer=_kill,
             pass                   # even teardown must not raise out of ensure_chrome
     return None
 
+_SCHEDULE_LOCK = config.ROOT / ".schedule.lock"
+
+@contextlib.contextmanager
+def _schedule_lock():
+    # Held for the ENTIRE tick (preflight -> chrome -> orchestrate -> teardown) so the 12:00
+    # alert's _wait_for_lock covers the pre-orchestrate window too (else a Persistent catch-up
+    # tick still in preflight/chrome looks idle and the alert false-fires). fd-flock = crash-safe.
+    f = open(_SCHEDULE_LOCK, "w")
+    try:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise orchestrate.Busy("another schedule tick holds the lock")
+        yield
+    finally:
+        f.close()
+
+def _schedule_busy():
+    try:
+        with _schedule_lock():
+            return False
+    except orchestrate.Busy:
+        return True
+
 def run_tick(date=None, *, orchestrate_run=None, pre=None, chrome=None, kill=None):
     # IMPORTANT: default seams are None and resolved to module globals at CALL time, so that
     # `monkeypatch.setattr(schedule, "preflight", ...)` in tests actually takes effect. A
@@ -129,20 +153,24 @@ def run_tick(date=None, *, orchestrate_run=None, pre=None, chrome=None, kill=Non
     chrome = chrome or ensure_chrome
     kill = kill or _kill
     date = date or orchestrate._today()
-    if not _probe_free():
-        return BUSY_EXIT
-    pf = pre(root=config.ROOT, date=date)
-    if not pf["ok"]:
-        # hard fail: abort THIS tick (no partial writes); next tick retries.
-        print(f"[preflight] abort: {pf['reason']}")
-        return 2
-    handle = chrome() if pf["reddit_ok"] else None   # launch BEFORE orchestrate (collect connects to it)
     try:
-        manifest = orchestrate_run(date)
-    finally:
-        kill(handle)                                  # tear down only our own pid group
-    status = (manifest or {}).get("status", "failed")
-    return orchestrate._STATUS_EXIT.get(status, 1)
+        with _schedule_lock():
+            if not _probe_free():          # a manual orchestrate is running -> skip, no Chrome
+                return BUSY_EXIT
+            pf = pre(root=config.ROOT, date=date)
+            if not pf["ok"]:
+                # hard fail: abort THIS tick (no partial writes); next tick retries.
+                print(f"[preflight] abort: {pf['reason']}")
+                return 2
+            handle = chrome() if pf["reddit_ok"] else None   # launch BEFORE orchestrate (collect connects to it)
+            try:
+                manifest = orchestrate_run(date)
+            finally:
+                kill(handle)                                  # tear down only our own pid group
+            status = (manifest or {}).get("status", "failed")
+            return orchestrate._STATUS_EXIT.get(status, 1)
+    except orchestrate.Busy:               # another schedule tick already running
+        return BUSY_EXIT
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="schedule")
@@ -189,7 +217,7 @@ def _wait_for_lock(timeout=300.0):
     # bound the run is stuck — itself an alertable failure, so we return and let the check proceed.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if _probe_free():
+        if _probe_free() and not _schedule_busy():   # orchestrate AND schedule tick both idle
             return
         time.sleep(5.0)
 

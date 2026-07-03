@@ -112,6 +112,17 @@ def test_run_tick_busy_probe_exits_without_running(monkeypatch):
     rc = schedule.run_tick("2026-07-04", orchestrate_run=lambda *a, **k: called.__setitem__("run", 1) or {})
     assert rc == 3 and called["run"] == 0    # busy exit code, orchestrate never called
 
+def test_run_tick_busy_when_another_tick_holds_schedule_lock(monkeypatch):
+    import contextlib
+    @contextlib.contextmanager
+    def busy_lock():
+        raise schedule.orchestrate.Busy("held")
+        yield
+    monkeypatch.setattr(schedule, "_schedule_lock", busy_lock)
+    ran = {"n": 0}
+    rc = schedule.run_tick("2026-07-04", orchestrate_run=lambda d, **k: ran.__setitem__("n", 1) or {})
+    assert rc == 3 and ran["n"] == 0   # BUSY, orchestrate never called
+
 def test_run_tick_preflight_hard_fail_aborts(monkeypatch):
     monkeypatch.setattr(schedule, "_probe_free", lambda: True)
     monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": False, "reason": "write-set dirty", "reddit_ok": False})
