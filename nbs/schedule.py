@@ -1,6 +1,7 @@
-import os, subprocess, shutil
+import os, subprocess, shutil, argparse
 from pathlib import Path
 from . import config
+from . import orchestrate
 
 def _git(root, *args):
     return subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True)
@@ -45,3 +46,47 @@ def preflight(root=config.ROOT, date=None):
         print("[preflight] warn: hugo not on PATH (a full run's build-verify would fail this tick)")
     # display absence only disables Reddit (publish proceeds RSS+X).
     return {"ok": True, "reason": "", "reddit_ok": _display_present()}
+
+BUSY_EXIT = 3   # matches orchestrate._STATUS_EXIT["busy"]
+
+def _probe_free():
+    # Non-blocking probe of orchestrate's lock: acquire-and-release. If busy, a run is in
+    # progress -> caller must not launch Chrome. Tiny race (probe releases before
+    # orchestrate.run re-acquires) is covered by no-manual-run-in-window; if it still races,
+    # orchestrate.run returns status "busy" and run_tick propagates BUSY_EXIT anyway.
+    try:
+        with orchestrate._lock():
+            return True
+    except orchestrate.Busy:
+        return False
+
+def run_tick(date=None, *, orchestrate_run=None, pre=None):
+    # IMPORTANT: default seams are None and resolved to module globals at CALL time, so that
+    # `monkeypatch.setattr(schedule, "preflight", ...)` in tests actually takes effect. A
+    # keyword default like `pre=preflight` binds the ORIGINAL function object at def time and
+    # would ignore the monkeypatch (and on the dev box run real preflight -> launch real Chrome).
+    orchestrate_run = orchestrate_run or orchestrate.run
+    pre = pre or preflight
+    date = date or orchestrate._today()
+    if not _probe_free():
+        return BUSY_EXIT
+    pf = pre(root=config.ROOT, date=date)
+    if not pf["ok"]:
+        # hard fail: abort THIS tick (no partial writes); next tick retries.
+        print(f"[preflight] abort: {pf['reason']}")
+        return 2
+    manifest = orchestrate_run(date)
+    status = (manifest or {}).get("status", "failed")
+    return orchestrate._STATUS_EXIT.get(status, 1)
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="schedule")
+    ap.add_argument("--date", default=None)
+    ap.add_argument("--check-alert", action="store_true")
+    a = ap.parse_args(argv)
+    if a.check_alert:
+        return check_alert(a.date)     # defined in Task 4
+    return run_tick(a.date)
+
+if __name__ == "__main__":
+    raise SystemExit(main())

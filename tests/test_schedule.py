@@ -1,6 +1,7 @@
 import os, subprocess, pytest
 from pathlib import Path
 from nbs import schedule
+from nbs import orchestrate
 
 def _git(cwd, *args):
     subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False)
@@ -103,3 +104,25 @@ def test_preflight_fails_closed_on_git_status_error(tmp_path, monkeypatch):
     res = schedule.preflight(root=r, date="2026-07-04")
     assert res["ok"] is False
     assert "git status failed" in res["reason"]
+
+def test_run_tick_busy_probe_exits_without_running(monkeypatch):
+    called = {"run": 0}
+    monkeypatch.setattr(schedule, "_probe_free", lambda: False)   # a run holds the lock
+    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": True, "reason": "", "reddit_ok": True})
+    rc = schedule.run_tick("2026-07-04", orchestrate_run=lambda *a, **k: called.__setitem__("run", 1) or {})
+    assert rc == 3 and called["run"] == 0    # busy exit code, orchestrate never called
+
+def test_run_tick_preflight_hard_fail_aborts(monkeypatch):
+    monkeypatch.setattr(schedule, "_probe_free", lambda: True)
+    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": False, "reason": "write-set dirty", "reddit_ok": False})
+    ran = {"n": 0}
+    rc = schedule.run_tick("2026-07-04", orchestrate_run=lambda *a, **k: ran.__setitem__("n", 1) or {})
+    assert rc != 0 and ran["n"] == 0
+
+def test_run_tick_delegates_and_propagates_exit(monkeypatch):
+    monkeypatch.setattr(schedule, "_probe_free", lambda: True)
+    # reddit_ok=False so that after Task 3 wires Chrome in, this test never launches a real one.
+    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": True, "reason": "", "reddit_ok": False})
+    rc = schedule.run_tick("2026-07-04",
+                           orchestrate_run=lambda date, **k: {"status": "published"})
+    assert rc == 0   # orchestrate _STATUS_EXIT["published"] == 0
