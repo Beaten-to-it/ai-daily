@@ -39,6 +39,40 @@ def run_claude_notools(text, timeout=GEN_TIMEOUT):
         raise RuntimeError(f"claude -p failed: {r.stderr[:300]}")
     return r.stdout
 
+def _sanitize_title(md):
+    # claude -p sometimes emits a title our lenient parse_frontmatter accepts but Hugo's
+    # strict YAML rejects -- e.g. an inner straight quote (`title: "A"는 B` = a complete "A"
+    # scalar + trailing garbage, real 2026-07-03 build break), a bare `:`, or a `#`
+    # (comment). title is the only free-text front-matter field (others are enums/URL/list/
+    # date we control), so re-emit its value as a single-quoted YAML scalar: only `'` needs
+    # doubling, and a literal `"` is harmless inside single quotes. Matches an optionally
+    # indented title with optional space before the colon (parse_frontmatter accepts those,
+    # so Hugo sees them too) and preserves the indent. A genuine `>`/`|` block scalar is left
+    # alone (already Hugo-safe + multiline -- wrapping its opener would corrupt it). Unwrapping
+    # a single-quoted scalar un-doubles `''`, so the fix is idempotent on its own output.
+    # ponytail: shares parse_frontmatter's unanchored-`---` split (a literal `---` inside a
+    # title mis-splits -- documented codebase-wide ceiling; our titles never contain `---`,
+    # and it fails safe as an isolated generation drop, not a broken build). `tags` is the
+    # other free-text field, deliberately deferred; switch to a real YAML dump if either
+    # field ever breaks Hugo. No-op without front matter/title; only the FIRST block.
+    if not md.lstrip().startswith("---"):
+        return md
+    start = md.find("---")
+    end = md.find("---", start + 3)
+    if end == -1:
+        return md
+    def _repl(m):
+        indent, raw = m.group(1), m.group(2).strip()
+        if re.fullmatch(r"[>|][0-9+-]*", raw):    # YAML block scalar opener: safe + multiline
+            return m.group(0)
+        if len(raw) >= 2 and raw[0] == raw[-1] == "'":
+            raw = raw[1:-1].replace("''", "'")    # unwrap + un-escape a single-quoted scalar
+        elif len(raw) >= 2 and raw[0] == raw[-1] == '"':
+            raw = raw[1:-1]                        # unwrap a double-quoted scalar (backslash-escapes: accepted ceiling)
+        return f"{indent}title: '" + raw.replace("'", "''") + "'"
+    fm = re.sub(r"(?m)^([ \t]*)title[ \t]*:(.*)$", _repl, md[start+3:end])
+    return md[:start+3] + fm + md[end:]
+
 def _strip_fences(raw):
     m = re.search(r"```(?:markdown)?\s*(---[\s\S]*)```", raw)
     body = m.group(1) if m else raw
@@ -47,7 +81,9 @@ def _strip_fences(raw):
     fm = re.search(r"(?m)^---\s*$", body)
     if fm:
         body = body[fm.start():]
-    return body.strip() + "\n"
+    # sanitize the title here (the one seam every LLM doc -- blog/usecase/ax -- shares) so a
+    # Hugo-breaking title can't reach content/ from any generation path. See _sanitize_title.
+    return _sanitize_title(body.strip() + "\n")
 
 def _duplicate_frontmatter_keys(md):
     # parse_frontmatter is dict-based (last key wins); a duplicate key (fake+real) still
