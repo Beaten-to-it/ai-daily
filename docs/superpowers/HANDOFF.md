@@ -1,6 +1,6 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-03 (**P3a merged·pushed**(main==origin `ea8e29e`, 149 passed). **P3b = spec 확정·adversarial 2R(advisor+Codex xhigh) 통과**, branch `p3b-email`, 사용자 리뷰 대기 → 이후 writing-plans. 스펙 §15 "확정 (P3b)" + 부록A. `/clear` 후 새 세션은 그 블록 읽고 **사용자 spec 승인 확인 → writing-plans**부터. 구현은 "구현해" 트리거 후.
+> 마지막 갱신: 2026-07-03 저녁. **main==origin `4e8c80c`, 206 passed.** 오늘 한 것: **P3b(이메일) merged·pushed** + **첫 실 발행 2026-07-03(뉴스 14글 라이브)** + **AX 경영 섹션 신설·라이브** + buildFuture·AX타임아웃 fix. **다음 재개점 = P3c(스케줄러) brainstorm.** 남은 즉시항목: ①**메일 실발송** — 사람이 `scripts/reauth_google.py`로 gmail.send 토큰 발급(브라우저, client_secret을 `~/.config/ai-daily/`에) 후 `python3 -m nbs.email --date <d>` ②`generate.py` title-YAML sanitize(다음 발행 재발). 상세 = 아래 §2.8 오늘 실황.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
@@ -17,8 +17,9 @@
 | P2b | 전문 fetch(grounding 게이트) + 항목당 한글 Blog 생성 + News/UseCase 조립 → `staging/` | ✅ **DONE (merged, 80 tests)**. 적대리뷰 2R(Codex+Opus) 통과. 상세 §2.5 |
 | P2c | 원자적 스테이징→`content/` 승격·완결성 검사·로컬 발행(빌드+커밋)·ledger append | ✅ **DONE·머지** (main, 117 tests, 적대리뷰 2R). §2.6 |
 | P3a | 오케스트레이터: collect→select→stage→publish→**push**→Actions배포. 날단위 멱등·crash-safe·no-email | ✅ **DONE·merged·pushed** (main==origin `ea8e29e`, 149 passed, 적대리뷰 2R + code-review 라운드). §2.7 |
-| P3b | 이메일 발송(Gmail, News+UseCase, push 성공 후, idempotent) | 🟢 **구현완료·190 passed·실 dry-run 스모크 통과·advisor+Codex 코드리뷰(없음), 머지대기**. branch `p3b-email`. ⚠️ **실 Gmail 발송은 미검증** — 사람이 `scripts/reauth_google.py`로 gmail.send 토큰 발급(브라우저) 후 실발송 스모크 필요. `nbs/email.py`+reauth+orchestrate seam. 스펙 §15 + plan 2026-07-03-p3b-email.md |
-| P3c | 스케줄러(systemd timer)·preflight·catchup·Reddit Chrome 무인기동 | 대기 (P3a 후) |
+| P3b | 이메일 발송(Gmail, News+UseCase, push 성공 후, idempotent) | ✅ **DONE·merged·pushed**. ⚠️ **실 Gmail 발송만 미검증** — reauth 토큰(사람) 후 발송. `nbs/email.py`+`scripts/reauth_google.py`+orchestrate seam. 스펙 §15 + plan. |
+| **AX 경영** | News·UseCase 평행 3번째 1급 산출물(경영자 톤 daily synthesis) | ✅ **DONE·merged·pushed·라이브** `/ax/2026-07-03/`. `prompts/ax.md`+`assemble.build_ax`(결정적 grounding 게이트)+stage/publish/hugo(menu+mainSections)/email 3섹션. 스펙 §16 + plan. |
+| P3c | 스케줄러(systemd timer)·preflight·catchup·Reddit Chrome 무인기동 | 🔵 **다음 재개점** (brainstorm부터) |
 | P3d | 관측성/알림(run.json 소비, 실패·누락·인증만료·floor미달 이메일, 일일 메트릭) | 대기 (P3b 후) |
 
 ## 2.5 P2b 완료 기록 (DONE — 참고용)
@@ -85,6 +86,18 @@
 - **적대리뷰 2R 통과 (게이트):** 스펙 advisor+Codex 2R / plan advisor+Codex 2R. 확정 findings 전부 fix — R1 **BLOCK** publish rc 미검사+stale publish.json→push(=`_stage_ok(publish)` 선검사), R1 MAJOR ×5(_push reason 유실·remote-equal 오분류·테스트 remote가 worktree 안·divergence 방향 미판별·publish-rc1 테스트 부재), R2 MAJOR(_push 3튜플 언팩·push-only reason·publish held/failed reason 전파). plan `docs/superpowers/plans/2026-07-02-p3a-orchestrate-publish.md`.
 - **검증:** unit 25(실 git bare-remote로 push/classify/flock/멱등가드/publish-crash 가드 커버) + 전체 142 passed. **실체인 부분스모크:** `nbs.orchestrate`가 실 `nbs.collect` 서브프로세스를 구동해 candidates.json 28건 생성 확인(엔트리→lock→guard→runner→아티팩트 체인 실증). ⚠️ **편차(의도적):** 전체 라이브 생성(select+stage `claude -p` ~25분·비결정)은 orchestrate 통해 안 돌림 — P2c 실스모크 published가 publish 단 E2E를 이미 커버하고, 나머지 링크는 실 git 유닛으로 커버. 전체 라이브는 `bash scripts/p3a_smoke.sh <오늘>`(Claude env)로 필요시.
 - **남은 것:** finishing-a-development-branch로 머지. 이후 **P3b 이메일 → P3c 스케줄러+preflight+catchup+Chrome → P3d 관측성/알림**(각자 brainstorm→spec→plan→2R→구현). push=이 P3a가 하지만 자동 트리거(스케줄)는 P3c.
+
+## 2.8 오늘 실황 (2026-07-03) — P3b·첫발행·AX경영·수정들
+
+**전부 merged·pushed. main==origin `4e8c80c`, 206 passed. 다음 재개점 = P3c brainstorm.**
+
+- **P3b 이메일 (DONE):** `nbs/email.py`(git-authoritative 발송게이트 `git cat-file origin/main:content/news`, gmail.send 단일권한 토큰·시크릿 레포밖 `~/.config/ai-daily/`, multipart, href/헤더 인젝션 방어, 날짜게이트 ledger) + `scripts/reauth_google.py` + orchestrate seam(published/skipped시 non-fatal, `--no-push` 미호출). 이제 **AX 포함 3섹션**(News+UseCase+AX). ⚠️ **실 Gmail 발송 미검증** — 저녁에 사람이 reauth 토큰 발급(브라우저) 후.
+- **첫 실 발행 2026-07-03 (라이브):** collect 138→select 16→stage 14ok/2타임아웃(격리)→publish→push. `/news/2026-07-03/` 등 라이브. **실 E2E가 유닛 못잡은 버그 2개 노출:**
+  - **buildFuture(수정·`ca02542`):** KST 아침 실행 시 date=오늘(KST)이 UTC 빌드서버 기준 미래 → Hugo 기본 `buildFuture=false`가 오늘 글 제외(로컬 build_verify 실패+배포 누락). `hugo.toml buildFuture=true`. **P3c 스케줄러 필수 전제**(매 KST 아침 재발).
+  - **⚠️ generate.py title-YAML (미해결):** claude -p가 title에 straight `"` 넣어 생성(예 `title: "A"는 B`) → 우리 parser 통과하나 Hugo strict YAML 거부(build 실패). 오늘 1파일 수동수정. **generate.py에서 front-matter title sanitize 필요 — 다음 발행 재발.**
+- **AX 경영 (신설·DONE·라이브):** News·UseCase 평행 3번째 1급 산출물(경영자 톤 daily synthesis). 스펙 §16 + plan `2026-07-03-ax-management.md`(각 2R×2). `prompts/ax.md`+`assemble.build_ax`(**결정적 grounding 게이트**: 본문 angle relref가 그날 항목 slug에 앵커≥1·전부 publishable·비-angle 거부=email `_RELREF_FULL` 동형→gate-pass⟹email-safe)+stage(ax_error §5격리)/publish(promote·writeset·build_verify·_degraded)/hugo(menu weight0+**mainSections에 ax**)/email 3섹션. 오늘치 `/ax/2026-07-03/` 라이브(grounding eyeball PASS: 3포인트 다 그날 항목서 도출).
+  - **⚠️ AX 타임아웃(fix `4e8c80c`):** build_ax 합성이 무거워 기본 `GEN_TIMEOUT=300` 초과 → `AX_TIMEOUT=900`. 단 **미측정 상한**(900서도 flake 가능, §5로 페이지만 스킵). AX 3× 필요는 AX본질 아니라 env claude -p 레이턴시 편차 의심.
+  - **교훈:** 새 stage 기본값(`ax=ax or asm.build_ax`)이 기존 test_stage를 실 claude -p로 만들어 suite 1.5s→333s. **전체 회귀 시간**으로 잡음. 새 주입점 추가 시 기존 테스트 스텁 갱신 필수.
 
 ## 3. 문서 위치
 - 스펙(SSOT): `docs/superpowers/specs/2026-07-01-nbs-news-blog-design.md`
