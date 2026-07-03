@@ -14,7 +14,7 @@ systemctl --user enable --now ai-daily.timer ai-daily-alert.timer
 mkdir -p "$HOME/.local/bin"
 for cli in claude opencli; do
   src="$(command -v "$cli" || true)"
-  if [ -n "$src" ]; then ln -sf "$src" "$HOME/.local/bin/$cli"; echo "symlinked $cli -> $src";
+  if [ -n "$src" ] && [ "$src" != "$HOME/.local/bin/$cli" ]; then ln -sf "$src" "$HOME/.local/bin/$cli"; echo "symlinked $cli -> $src";
   else echo "[warn] $cli not found on PATH — publish/Reddit will degrade until installed"; fi
 done
 # Run user timers without an interactive login session (required for WSL unattended).
