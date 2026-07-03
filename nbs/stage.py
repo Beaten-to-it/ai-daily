@@ -7,10 +7,11 @@ from .models import FetchResult
 
 _EVENT_KEY_RE = re.compile(r"^[a-z0-9-]{1,100}$")   # bounded: slug goes in a filename (NAME_MAX 255)
 
-def run(date, *, fetch=None, generate=None, usecase=None):
+def run(date, *, fetch=None, generate=None, usecase=None, ax=None):
     fetch = fetch or fetch_mod.fetch_item
     generate = generate or gen_mod.generate_all
     usecase = usecase or asm.build_usecase
+    ax = ax or asm.build_ax
     d = run_dir(date)
     d.mkdir(parents=True, exist_ok=True)
     sel = json.loads((d/"selection.json").read_text(encoding="utf-8"))
@@ -22,7 +23,7 @@ def run(date, *, fetch=None, generate=None, usecase=None):
 
     if not items:
         payload = {"date": date, "status": "skip-empty", "results": [],
-                   "published_count": 0, "floor_failed": False, "usecase_error": None}
+                   "published_count": 0, "floor_failed": False, "usecase_error": None, "ax_error": None}
         (d/"generation.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return payload
 
@@ -48,7 +49,7 @@ def run(date, *, fetch=None, generate=None, usecase=None):
 
     results = generate(items, fetched_map, date)
 
-    for sub in ("posts", "news", "usecase"):
+    for sub in ("posts", "news", "usecase", "ax"):
         (staging/sub).mkdir(parents=True, exist_ok=True)
     for r in results:
         if r.status == "ok" and getattr(r, "_md", None):
@@ -56,6 +57,7 @@ def run(date, *, fetch=None, generate=None, usecase=None):
 
     floor_failed = not asm.floor_ok(results)
     usecase_error = None
+    ax_error = None
     if not floor_failed:
         (staging/"news"/f"{date}.md").write_text(asm.build_news_index(results, date), encoding="utf-8")
         try:
@@ -66,11 +68,19 @@ def run(date, *, fetch=None, generate=None, usecase=None):
                 (staging/"usecase"/f"{date}.md").write_text(uc, encoding="utf-8")
         except Exception as e:
             usecase_error = str(e)[:200]
+        try:
+            # §5 isolation: ax failure (bad output/timeout/grounding-gate reject) must not abort.
+            # Gate rejection (ungrounded) is a normal "no AX page today" outcome.
+            ax_md = ax(results, date)
+            if ax_md:
+                (staging/"ax"/f"{date}.md").write_text(ax_md, encoding="utf-8")
+        except Exception as e:
+            ax_error = str(e)[:200]
 
     payload = {"date": date, "status": "ok",
                "results": [r.to_dict() for r in results],
                "published_count": len(asm.publishable(results)),
-               "floor_failed": floor_failed, "usecase_error": usecase_error}
+               "floor_failed": floor_failed, "usecase_error": usecase_error, "ax_error": ax_error}
     (d/"generation.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return payload
 

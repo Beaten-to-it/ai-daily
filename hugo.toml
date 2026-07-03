@@ -22,9 +22,13 @@ buildFuture = true
   ShowPostNavLinks = true
   ShowCodeCopyButtons = true
   ShowToc = true
-  mainSections = ["news", "posts", "usecase"]
+  mainSections = ["ax", "news", "posts", "usecase"]
 
 [menu]
+  [[menu.main]]
+    name = "AX 경영"
+    url = "ax/"
+    weight = 0
   [[menu.main]]
     name = "News"
     url = "news/"
