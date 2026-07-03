@@ -68,6 +68,10 @@ def build_usecase(results, date, *, run=None):
     return md
 
 AX_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "ax.md"
+# AX synthesizes over the whole day's summaries — heavier than a single blog/usecase, so it
+# needs a longer claude -p budget than GEN_TIMEOUT(300s), which it empirically overruns
+# (300s timed out; 900s succeeded). Without this the daily stage would ax_error every day.
+AX_TIMEOUT = 900
 
 # any ref/relref shortcode ({{< ref >}}, {{% relref %}}, ...) — used to reject NON-angle forms
 # so a gate-pass AX body is also email-safe (email rewrites ONLY the angle form).
@@ -81,7 +85,8 @@ def build_ax(results, date, *, run=None):
     if not publishable(results):
         return None
     if run is None:
-        from .generate import run_claude_notools as run
+        from . import generate as _gen
+        run = lambda p: _gen.run_claude_notools(p, timeout=AX_TIMEOUT)   # AX-specific long budget
     from .generate import _strip_fences
     from .models import parse_frontmatter
     from . import publish   # function-level: avoids assemble<->publish import cycle; reuse _RELREF

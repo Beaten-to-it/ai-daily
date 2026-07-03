@@ -56,6 +56,20 @@ def test_build_ax_rejects_missing_front_matter():
                           run=lambda p: '본문만 {{< relref "/posts/2026-07-03-a.md" >}}')
 
 
+def test_build_ax_default_run_uses_long_timeout(monkeypatch):
+    # daily stage calls build_ax with run=None → must use AX_TIMEOUT (>300), else it ax_errors
+    # every day (AX synthesis overruns the 300s GEN_TIMEOUT).
+    from nbs import generate as gen
+    seen = {}
+    def fake(text, timeout=None):
+        seen["timeout"] = timeout
+        return _fm('[x]({{< relref "/posts/2026-07-03-a.md" >}})')
+    monkeypatch.setattr(gen, "run_claude_notools", fake)
+    assemble.build_ax([_res("2026-07-03-a")], "2026-07-03")   # run=None → real default path
+    assert seen["timeout"] == assemble.AX_TIMEOUT
+    assert assemble.AX_TIMEOUT >= 600
+
+
 def test_gate_pass_body_is_email_safe():
     # positive seam (advisor): gate condition (c) means gate-pass ⟹ email-safe. A body whose
     # only shortcode is the angle relref build_ax accepts must survive email.rewrite_relref
