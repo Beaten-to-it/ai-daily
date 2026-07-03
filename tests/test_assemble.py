@@ -39,6 +39,14 @@ def test_usecase_uses_injected_run_and_validates():
                                run=lambda t, timeout=180: "---\ntitle: U\ndate: 2026-07-01\ntags: [usecase]\n---\nbody\n")
     assert out.startswith("---")
 
+def test_usecase_sanitizes_hugo_breaking_title():
+    # sibling caller of the same seam: an LLM-emitted title with an inner straight quote
+    # must be neutralized here too (else the usecase page breaks the Hugo build like blog).
+    out=assemble.build_usecase([_ok_with_md("a")], "2026-07-01",
+        run=lambda t, timeout=180: '---\ntitle: "AI" 활용\ndate: 2026-07-01\ntags: [x]\n---\nbody\n')
+    tline=next(l for l in out.splitlines() if l.startswith("title:"))
+    assert tline == '''title: '"AI" 활용\''''
+
 def test_usecase_rejects_missing_frontmatter():
     import pytest
     with pytest.raises(ValueError):

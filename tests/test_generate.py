@@ -110,6 +110,64 @@ def test_timeout_is_passed_to_render():
     generate.generate_all(items, {"a":_fr("confirmed")}, "2026-07-01", render=cap, timeout=7)
     assert seen["t"]==7
 
+def test_render_blog_sanitizes_title_with_inner_quotes(monkeypatch):
+    # real E2E break (2026-07-03): claude -p emitted a straight " inside the title value
+    # (`title: "A"는 B` = a complete "A" scalar + trailing garbage). Lenient parse_frontmatter
+    # accepts it, but Hugo's strict YAML rejects it and the build fails. render must emit a
+    # YAML-safe title. Single-quote it: the inner " becomes a harmless literal.
+    broken = _GOOD.replace("title: T", 'title: "A"는 B')
+    monkeypatch.setattr(generate, "run_claude_notools", lambda t, timeout=180: broken)
+    md = generate.render_blog(_item(), _fetched(), "2026-07-01")
+    tline = next(l for l in md.splitlines() if l.startswith("title:"))
+    assert tline == '''title: '"A"는 B\''''
+
+def test_sanitize_title_escapes_apostrophe_and_unwraps_clean():
+    # apostrophe must be doubled for a single-quoted YAML scalar; a cleanly double-quoted
+    # title (already valid YAML) is unwrapped then re-quoted, never double-wrapped.
+    assert generate._sanitize_title("---\ntitle: OpenAI's o5\n---\nb\n") \
+        == "---\ntitle: 'OpenAI''s o5'\n---\nb\n"
+    assert generate._sanitize_title('---\ntitle: "Clean"\n---\nb\n') \
+        == "---\ntitle: 'Clean'\n---\nb\n"
+    # a bare `#` would start a YAML comment -> Hugo silently truncates `Cost #1` to `Cost`;
+    # single-quoting keeps the whole value.
+    assert generate._sanitize_title("---\ntitle: Cost #1\n---\nb\n") \
+        == "---\ntitle: 'Cost #1'\n---\nb\n"
+
+def test_sanitize_title_handles_indent_and_space_before_colon():
+    # BLOCK (codex R1): parse_frontmatter accepts an indented title / `title :` with a space,
+    # so Hugo sees it too -- the sanitizer must match those forms and preserve indentation.
+    assert generate._sanitize_title('---\n  title: "A"는 B\n  date: d\n---\nb\n') \
+        == '''---\n  title: '"A"는 B'\n  date: d\n---\nb\n'''
+    assert generate._sanitize_title('---\ntitle : "A"는 B\n---\nb\n') \
+        == '''---\ntitle: '"A"는 B'\n---\nb\n'''
+
+def test_sanitize_title_leaves_block_scalar_untouched():
+    # MAJOR (codex R1): a `>`/`|` block scalar is already Hugo-safe and multiline; wrapping
+    # its first line would corrupt it. Leave genuine block-scalar openers alone.
+    src = "---\ntitle: >\n  Line one\n  line two\ndate: d\n---\nb\n"
+    assert generate._sanitize_title(src) == src
+
+def test_sanitize_title_roundtrips_single_quoted_apostrophe():
+    # MAJOR (codex R1): a valid single-quoted title with an escaped apostrophe must not gain
+    # extra quotes; sanitize is idempotent on its own single-quoted output.
+    once = generate._sanitize_title("---\ntitle: 'OpenAI''s o5'\n---\nb\n")
+    assert once == "---\ntitle: 'OpenAI''s o5'\n---\nb\n"
+    assert generate._sanitize_title(once) == once   # idempotent
+
+def test_strip_fences_sanitizes_broken_title():
+    # sanitize lives in _strip_fences -- the single seam every LLM doc (blog/usecase/ax)
+    # passes through -- so a Hugo-breaking title is neutralized regardless of caller.
+    out = generate._strip_fences('---\ntitle: "A"는 B\ndate: d\n---\nbody\n')
+    tline = next(l for l in out.splitlines() if l.startswith("title:"))
+    assert tline == '''title: '"A"는 B\''''
+
+def test_sanitize_title_noop_without_title_or_frontmatter():
+    assert generate._sanitize_title("---\ndate: d\n---\nb\n") == "---\ndate: d\n---\nb\n"
+    assert generate._sanitize_title("no frontmatter") == "no frontmatter"
+    # a `title:` in the body must not be touched -- only the front-matter region
+    assert generate._sanitize_title("---\ndate: d\n---\ntitle: in body\n") \
+        == "---\ndate: d\n---\ntitle: in body\n"
+
 def test_success_sets_post_path_slug_and_md():
     ok=lambda item,f,d,timeout=180: "---\nok\n---\nbody\n"
     items=[{"event_key":"a","title":"A","url":"u","source":"S","source_type":"article","rank":1,"rationale":"r"}]
