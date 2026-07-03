@@ -24,7 +24,12 @@ def preflight(root=config.ROOT, date=None):
     # HARD (only what orchestrate can't cleanly self-handle):
     # 1) THIS date's write-set must be clean — orchestrate's rollback `git checkout` would else
     #    destroy the user's uncommitted changes (spec §172).
-    dirty = _git(root, "status", "--porcelain", "--", *_writeset(date)).stdout.strip()
+    st = _git(root, "status", "--porcelain", "--", *_writeset(date))
+    if st.returncode != 0:
+        # fail CLOSED: a git error must not be silently read as "clean" (spec §172's rollback
+        # guard only holds if we actually know the write-set state).
+        return {"ok": False, "reason": f"git status failed: {st.stderr[:80]}", "reddit_ok": False}
+    dirty = st.stdout.strip()
     if dirty:
         return {"ok": False, "reason": f"write-set dirty: {dirty.splitlines()[0]}", "reddit_ok": False}
     # 2) git identity + credentials (commit/push preconditions; push_only path needs these too).

@@ -56,3 +56,50 @@ def test_preflight_soft_when_no_display(tmp_path, monkeypatch):
     monkeypatch.setattr(schedule, "_git_credentials_present", lambda: True)
     res = schedule.preflight(root=r, date="2026-07-04")
     assert res["ok"] is True and res["reddit_ok"] is False  # soft: publish still proceeds
+
+def test_preflight_hard_fails_on_missing_identity(tmp_path, monkeypatch):
+    # Neutralize the GLOBAL/SYSTEM gitconfig so a real dev machine's identity can't leak in and
+    # mask the missing-identity branch under test.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+    r = tmp_path / "repo"
+    (r / "content" / "news").mkdir(parents=True)
+    (r / "data").mkdir()
+    _git(r, "init", "-q")
+    (r / "data" / "published.csv").write_text("header\n")
+    _git(r, "add", "-A")
+    # commit with a one-off author (-c) so the repo itself never gets a LOCAL user.name/email —
+    # keeps the write-set clean while leaving identity genuinely unset for preflight to detect.
+    _git(r, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base")
+    monkeypatch.setattr(schedule, "_git_credentials_present", lambda: True)
+    res = schedule.preflight(root=r, date="2026-07-04")
+    assert res["ok"] is False
+    assert "identity" in res["reason"]
+
+def test_preflight_hard_fails_on_missing_credentials(tmp_path, monkeypatch):
+    r = _repo(tmp_path)
+    monkeypatch.setattr(schedule, "_git_credentials_present", lambda: False)
+    res = schedule.preflight(root=r, date="2026-07-04")
+    assert res["ok"] is False
+    assert "git-credentials" in res["reason"]
+
+def test_preflight_hard_fails_on_dirty_post(tmp_path, monkeypatch):
+    r = _repo(tmp_path)
+    monkeypatch.setattr(schedule, "_git_credentials_present", lambda: True)
+    (r / "content" / "posts").mkdir(parents=True)
+    (r / "content" / "posts" / "2026-07-04-slug.md").write_text("dirty post")
+    res = schedule.preflight(root=r, date="2026-07-04")
+    assert res["ok"] is False and "write-set" in res["reason"]
+
+def test_preflight_fails_closed_on_git_status_error(tmp_path, monkeypatch):
+    r = _repo(tmp_path)
+    monkeypatch.setattr(schedule, "_git_credentials_present", lambda: True)
+    real_git = schedule._git
+    def fake_git(root, *args):
+        if args and args[0] == "status":
+            return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="boom")
+        return real_git(root, *args)
+    monkeypatch.setattr(schedule, "_git", fake_git)
+    res = schedule.preflight(root=r, date="2026-07-04")
+    assert res["ok"] is False
+    assert "git status failed" in res["reason"]
