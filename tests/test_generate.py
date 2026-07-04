@@ -39,6 +39,10 @@ def test_run_claude_disables_tools_and_uses_stdin(monkeypatch):
     # permission_denials: []). --tools "" is the flag that actually zeroes tool_use (tools: [] at
     # init, 0 tool_use events incl. under injection). See task-4-report.md for the full trace.
     assert out == "ok" and "--tools" in seen["cmd"]
+    # regression: --tools VALUE must be a non-empty dummy (== generate.NOTOOLS). EMPTY `--tools ""`
+    # deadlocks claude on a large stdin prompt (2026-07-04 P0); NOTOOLS keeps tools: [] (§10).
+    ti = seen["cmd"].index("--tools")
+    assert seen["cmd"][ti + 1] == generate.NOTOOLS and seen["cmd"][ti + 1] != ""
     assert seen["input"] == "hello" and seen["timeout"] == 7
 
 def test_render_blog_validates_and_checks_consistency(monkeypatch):
