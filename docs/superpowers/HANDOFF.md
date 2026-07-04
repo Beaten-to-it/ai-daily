@@ -1,24 +1,20 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-04. **main `eb87fdb`(origin +17, 미push), 237 passed.** 오늘: **P3c 스케줄러 전체 완료·머지**(spec 2R+plan 2R+subagent-driven 5태스크+advisor+Codex 2R) + **실 스모크가 P0 노출**(아래) + sentinel fix(각주).
+> 마지막 갱신: 2026-07-04. **main==origin `f41398a`(push됨), 237 passed.** 오늘: **P3c 스케줄러 전체 완료·머지** + **실 스모크가 P0 노출→해결** + **2026-07-04 라이브 발행**(10 posts+news+usecase, push+email).
 >
-> ## 🔴🔴 P0 — ai-daily 발행 전면 다운 (미해결, 최우선)
-> **`claude -p`가 select TASK(복잡 추론+대형 JSON 출력)에서 무응답 행**(stdout 0·stderr 0·no 429, 340s간). newsNblog도 껐으므로 **데일리 제품이 오늘부터 다운.** 타이머는 정지시켜둠.
-> - **철저 진단(재현 안 하려면 읽기):** 크기·내용·`--tools` 플래그·systemd·MCP·심링크 전부 **아님**. 판별: tiny prompt OK / **99KB candidate 내용+"reply OK"(trivial 생성) OK** / **50개 select TASK도 행**. 즉 입력 아니라 **선별 생성 작업 자체**. 2026-07-03엔 됨(138→16) → **2026-07-04 발생.** claude `2.1.198→2.1.200` 업데이트(08:44 KST) 겸 **이 세션이 claude -p 수백 회 호출**(subagent+Codex+진단 18라운드).
-> - **유력 2가설(미확정):** ①claude 2.1.200 회귀 ②세션 레이트리밋(긴 생성만 스로틀). **silent 340s 행(0/0/no-429)은 클라측/생성stall 쪽으로 약간 기욺**(서버 레이트리밋은 보통 에러 반환). 둘 다 **파이프라인 코드 밖.**
-> - **다음 세션 playbook(순서대로):**
->   1. **먼저 fresh/idle 세션서 실 select 재시도**(레이트리밋 배제): `cd NBs && export PATH="$HOME/.local/bin:$PATH" && timeout 200 python3 -m nbs.select --date <오늘>`. 되면 transient(코드 무결), 안 되면 →2.
->   2. **slow-vs-stuck 확정:** `claude -p --tools "__no_tools__" --strict-mcp-config --output-format stream-json --verbose < /tmp/selprompt.txt > /tmp/ev.json`(파이프 금지, 긴 timeout) 후 `/tmp/ev.json` 읽기 — init/system 이벤트 후 stall=생성/API, 무이벤트=클라 startup.
->   3. 회귀 확정 시: `npm i -g @anthropic-ai/claude-code@2.1.198` 다운그레이드 테스트 + 버그 리포트. (주의: 스모크는 198서도 행했으나 그때도 레이트리밋 겹쳤을 수 있음.)
->   - **재현 자산 남김:** `/tmp/selprompt.txt`(실 select 프롬프트 121K), `runs/2026-07-04/candidates.json`(132개).
+> ## ✅ P0 — 발행 다운 → 해결됨 (근본원인=claude effortLevel 상속)
+> **근본원인:** 스폰된 `claude -p`가 `settings.json effortLevel: xhigh`를 상속 → select(132개 dedup)·블로그 생성이 extended thinking에 300s+ 쏟아 timeout("행"처럼 보임; stream-json엔 thinking_tokens 89개). **버전 무관**(2.1.193~201 다 행), `--tools`/크기/내용/systemd/MCP 무관. env-unset 무효(settings.json이 이김).
+> - **Fix(merged):** argv에 `--effort` 핀 — select=`low`(~60s), generate 블로그/usecase/ax=`high`(~222s, GEN_TIMEOUT 300→900). `nbs/select.py`·`nbs/generate.py`. 실검증: nbs.select rc=0 60s selected=10, **실 stage 10/10 ok ~11분**, publish promoted=12, push+email(gmail `19f2ac3c4fbcf973`). [[claude-p-inherits-effortlevel]].
+> - **연관 설정:** `~/.claude/settings.json`에 `autoUpdatesChannel: "stable"` 세팅 + claude를 stable **2.1.193**로 내림(P0 진단 중, 버전 무관 확인용 — 유지 무방).
+> - **⚠️ 미결 follow-up(작음, §5 격리라 발행 안 막음):** **AX가 high effort서 front-matter 없이 출력→`ax_error`**(오늘 AX 페이지 유실). news/usecase/posts는 정상. AX 프롬프트/후처리가 high effort 출력(추론 preamble?)을 못 받는 듯 — `assemble.build_ax`+`prompts/ax.md` 점검. AX_TIMEOUT=900 유지.
 >
-> ## P3c 스케줄러 (코드 done·머지, 발행은 P0로 막힘)
-> 스모크가 통합경로(preflight→schedule-lock→ensure_chrome **reddit degrade 실증**→collect **132개 수집**)를 **정상 구동**하다 select(claude -p)서 P0로 죽음 = P3c 코드 무결. 타이머 정지(`systemctl --user disable --now ai-daily.timer ai-daily-alert.timer` 완료). **재활성 = P0 해결 후 `bash scripts/install_scheduler.sh`.** 실행검증(1회 Chrome 프로필 셋업=Browser-Bridge 확장+reddit 로그인 + `systemctl --user start ai-daily.service`)은 P0 해결 후.
+> ## ✅ P3c 스케줄러 — 완료·머지·타이머 재활성
+> 통합경로(preflight→schedule-lock→ensure_chrome **reddit degrade 실증**→collect 132개→**effort-pin 후 select~publish까지 실동작**) 검증. 타이머 **재활성됨**(`systemctl --user enable --now ai-daily.timer ai-daily-alert.timer`; 07/09/11 발행 + 12:00 alert). **⚠️ Reddit 실행검증 미완:** 1회 수동 Chrome 프로필 셋업 필요(`google-chrome --user-data-dir="$HOME/.config/ai-daily/chrome-profile"` → OpenCLI Browser-Bridge 확장 설치 + reddit 로그인). 안 하면 reddit 없이 RSS+X로 발행(정상 degrade). **다음 무인 tick(내일 07시)이 첫 완전 무인 실증.**
 >
-> ## sentinel fix (각주 — 별개 버그, 머지됨, 발행 복구 아님)
-> `--tools ""`(빈 인자)가 대형 stdin서 claude 데드락 = P0와 **별개** 진짜 버그. `--tools "__no_tools__"`(tools:[] 보안 동일, 인젝션 거부 verified)로 교체, 양 caller(select+generate→usecase/ax). advisor+Codex R1 통과. **미결 minor:** `NOTOOLS`가 select.py·generate.py **중복**(동기화 유지 or config.py로 hoist) · 스펙§10/prompts 등 docs가 아직 `--tools ""` 언급(런타임은 NOTOOLS).
+> ## sentinel fix (각주 — 별개 버그, 머지됨)
+> `--tools ""`(빈 인자)가 대형 stdin서 claude 데드락 = effort-P0와 **별개** 진짜 버그(둘 다 오늘 fix). `--tools "__no_tools__"`(tools:[] 보안 동일, 인젝션 거부 verified)로 교체, 양 caller. advisor+Codex R1 통과. **미결 minor:** `NOTOOLS`가 select.py·generate.py **중복**(동기화 or config.py hoist) · 스펙§10/prompts docs가 아직 `--tools ""` 언급(런타임은 NOTOOLS).
 >
-> **다음 재개점 = 위 P0 playbook** (그 후 P3c 실행검증 → P3d 관측성). 앞선 즉시항목 전부 ✅: ~~①메일 실발송~~ **DONE**(newsNblog OAuth Desktop client_secret 재사용→`~/.config/ai-daily/`에 0600 배치, 사람이 reauth로 gmail.send 토큰 발급, 실발송 성공 gmail id `19f280cc4d145929`, 재실행=`already_sent` 멱등 확인). ~~②generate.py title-YAML sanitize~~ **DONE**(branch `fix/generate-title-yaml-sanitize`, `_sanitize_title` at `_strip_fences` seam=blog/usecase/ax 공통, Hugo 0.163.3 RED→GREEN 실증, advisor+Codex xhigh 2R, 214 passed). 상세 = 아래 §2.8 오늘 실황.
+> **다음 재개점 = ①AX high-effort 출력 fix(§5 격리라 급하진 않음) ②P3c reddit 1회 Chrome 셋업 후 무인 tick 관측 ③P3d(관측성).** 앞선 즉시항목 전부 ✅: ~~①메일 실발송~~ **DONE**(newsNblog OAuth Desktop client_secret 재사용→`~/.config/ai-daily/`에 0600 배치, 사람이 reauth로 gmail.send 토큰 발급, 실발송 성공 gmail id `19f280cc4d145929`, 재실행=`already_sent` 멱등 확인). ~~②generate.py title-YAML sanitize~~ **DONE**(branch `fix/generate-title-yaml-sanitize`, `_sanitize_title` at `_strip_fences` seam=blog/usecase/ax 공통, Hugo 0.163.3 RED→GREEN 실증, advisor+Codex xhigh 2R, 214 passed). 상세 = 아래 §2.8 오늘 실황.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
