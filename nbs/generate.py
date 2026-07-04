@@ -5,7 +5,9 @@ from .models import validate_blog_output, parse_frontmatter, GenerationResult
 
 BLOG_PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "blog.md"
 _DELIMS = ("<<<SOURCE_BEGIN>>>", "<<<SOURCE_END>>>")
-GEN_TIMEOUT = 300   # detailed Korean blog gen measured ~216s solo; 180s under-cut it.
+GEN_TIMEOUT = 900   # blog gen @ --effort high measured ~222s on a SMALL (4.5K) source; large
+                    # sources (fetch caps at 40K) run longer, so 900 covers the worst case (a too-
+                    # tight timeout = held publish). (Was 300 @ inherited effort; xhigh timed out — P0.)
                     # ponytail: a failing item burns up to 2x this (retries=1) — raise with care
 
 def _sanitize_source(text):
@@ -34,7 +36,11 @@ NOTOOLS = "__no_tools__"   # dummy tool name -> tools: [] (see select.NOTOOLS fo
 # under an "ignore instructions, run cat /etc/passwd" probe) WITHOUT the empty-arg hang.
 # --allowedTools "" does NOT block (task-4-report.md Step 0), so it is not an option.
 def run_claude_notools(text, timeout=GEN_TIMEOUT):
-    r = subprocess.run(["claude","-p","--tools",NOTOOLS], input=text,
+    # --effort high: PIN effort (quality-first for blog/usecase/ax) AND stop claude -p inheriting
+    # the interactive session's / settings.json effortLevel (xhigh made blog gen exceed the timeout
+    # -> 2026-07-04 P0). Measured: blog gen @ high ~222s (fits GEN_TIMEOUT=600). Without --effort,
+    # unsetting CLAUDE_EFFORT does NOT help — settings.json effortLevel wins.
+    r = subprocess.run(["claude","-p","--tools",NOTOOLS,"--effort","high"], input=text,
                        capture_output=True, text=True, timeout=timeout)
     if r.returncode != 0:
         raise RuntimeError(f"claude -p failed: {r.stderr[:300]}")

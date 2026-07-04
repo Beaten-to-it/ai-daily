@@ -43,6 +43,10 @@ def test_run_claude_disables_tools_and_uses_stdin(monkeypatch):
     # deadlocks claude on a large stdin prompt (2026-07-04 P0); NOTOOLS keeps tools: [] (§10).
     ti = seen["cmd"].index("--tools")
     assert seen["cmd"][ti + 1] == generate.NOTOOLS and seen["cmd"][ti + 1] != ""
+    # regression: effort PINNED to high (quality) — also stops inheriting settings.json xhigh that
+    # made blog gen exceed the timeout (2026-07-04 P0).
+    ei = seen["cmd"].index("--effort")
+    assert seen["cmd"][ei + 1] == "high"
     assert seen["input"] == "hello" and seen["timeout"] == 7
 
 def test_render_blog_validates_and_checks_consistency(monkeypatch):

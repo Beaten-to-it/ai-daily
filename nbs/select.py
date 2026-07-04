@@ -26,7 +26,12 @@ NOTOOLS = "__no_tools__"   # a dummy (non-existent) tool name -> claude resolves
 def run_claude(text, timeout=300):
     # select only needs text->JSON generation over untrusted RSS/X/Reddit candidate text; NOTOOLS
     # zeroes tool_use (§10) so injected candidate text can't drive a tool.
-    r=subprocess.run(["claude","-p","--tools",NOTOOLS], input=text, capture_output=True, text=True, timeout=timeout)
+    # --effort low: PIN effort so claude -p does NOT inherit an interactive session's / settings.json
+    # effortLevel (e.g. xhigh). At xhigh, the 132-candidate dedup/rank task thinks >300s and times
+    # out (2026-07-04 P0: publish down). Selection is mechanical -> low completes in <90s. (Verified:
+    # low rc=0 5KB JSON; high >240s; xhigh timed out. Version-independent — 2.1.193..201 all hung at
+    # inherited xhigh.) Without --effort, env-unset does NOT help — settings.json effortLevel wins.
+    r=subprocess.run(["claude","-p","--tools",NOTOOLS,"--effort","low"], input=text, capture_output=True, text=True, timeout=timeout)
     if r.returncode!=0: raise RuntimeError(f"claude -p failed: {r.stderr[:300]}")
     return r.stdout
 
