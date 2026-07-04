@@ -16,12 +16,17 @@ def parse_selection(raw):
     blob=m.group(1) if m else raw[raw.find("{"):raw.rfind("}")+1]
     return json.loads(blob)
 
+NOTOOLS = "__no_tools__"   # a dummy (non-existent) tool name -> claude resolves it to tools: []
+# WHY not `--tools ""`: claude CLI (2.1.198/200) DEADLOCKS on an EMPTY `--tools` arg + a large
+# stdin prompt (no output, no error, hangs to timeout) — the 2026-07-04 unattended smoke hung
+# select for 300s here, and it reproduces on a bare `claude -p --tools "" < big.txt`. A non-empty
+# dummy tool name avoids the empty-arg deadlock while giving the SAME zero-tools security: verified
+# tools: [] + 0 tool_use + injection refused (the §10 property `--tools ""` gave). --allowedTools ""
+# does NOT restrict (task-4-report.md Step 0), so this is the one that both blocks tools AND scales.
 def run_claude(text, timeout=300):
-    # --tools "" : empty tool set = no tool access (§10). select only needs text->JSON
-    # generation over untrusted RSS/X/Reddit candidate text; --allowedTools "" does NOT
-    # restrict (see nbs/generate.py, task-4-report.md Step 0) -- --tools "" is the flag
-    # that actually zeroes tool_use.
-    r=subprocess.run(["claude","-p","--tools",""], input=text, capture_output=True, text=True, timeout=timeout)
+    # select only needs text->JSON generation over untrusted RSS/X/Reddit candidate text; NOTOOLS
+    # zeroes tool_use (§10) so injected candidate text can't drive a tool.
+    r=subprocess.run(["claude","-p","--tools",NOTOOLS], input=text, capture_output=True, text=True, timeout=timeout)
     if r.returncode!=0: raise RuntimeError(f"claude -p failed: {r.stderr[:300]}")
     return r.stdout
 

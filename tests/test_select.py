@@ -12,6 +12,11 @@ def test_run_claude_disables_tools_and_uses_stdin(monkeypatch):
     monkeypatch.setattr(select.subprocess, "run", fake_run)
     out = select.run_claude("hello", timeout=7)
     assert out == "ok" and "--tools" in seen["cmd"]
+    # regression: the --tools VALUE must be a non-empty dummy (== select.NOTOOLS). An EMPTY
+    # `--tools ""` deadlocks claude on a large stdin prompt (2026-07-04 P0). NOTOOLS still yields
+    # tools: [] (zero tools, §10) — verified live — so security is unchanged.
+    ti = seen["cmd"].index("--tools")
+    assert seen["cmd"][ti + 1] == select.NOTOOLS and seen["cmd"][ti + 1] != ""
     assert seen["input"] == "hello" and seen["timeout"] == 7
 
 def test_run_claude_default_timeout_is_300(monkeypatch):
