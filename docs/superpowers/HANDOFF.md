@@ -1,15 +1,24 @@
 # ai-daily — 작업 핸드오프 (세션 재개용)
 
-> 마지막 갱신: 2026-07-04. **main `8c9f3d5`(=origin +14, 아직 push 안 함), 237 passed.** 오늘 한 것: **P3c(스케줄러) 전체 완료·main 머지**(spec 2R + plan 2R + subagent-driven 5태스크 + advisor + Codex xhigh 2R, 각 태스크 리뷰통과). 앞선 세션: P3b 실발송검증 + 첫 발행 + AX + title-YAML fix.
+> 마지막 갱신: 2026-07-04. **main `eb87fdb`(origin +17, 미push), 237 passed.** 오늘: **P3c 스케줄러 전체 완료·머지**(spec 2R+plan 2R+subagent-driven 5태스크+advisor+Codex 2R) + **실 스모크가 P0 노출**(아래) + sentinel fix(각주).
 >
-> ### ⛔ P3c FINISH LINE (머지됐지만 아직 "실행 검증" 안 됨 — 스킵 금지)
-> **통합 라이브 경로가 한 번도 안 돌았다**(유닛은 전부 seam 주입). 무인 발행이 실제로 되는지 확인하려면 사람이:
-> 1. `bash scripts/install_scheduler.sh` (타이머 설치 + claude/opencli 심링크 + linger)
-> 2. **1회 수동 Chrome 셋업**(reddit용): `google-chrome --user-data-dir="$HOME/.config/ai-daily/chrome-profile"` 띄워 **OpenCLI Browser-Bridge 확장 설치 + reddit 로그인**(둘 다 — 로그인만으론 브리지 없음). 안 하면 첫 tick은 reddit degrade(RSS+X)로 여전히 valid 스모크.
-> 3. `systemctl --user start ai-daily.service` + `journalctl --user -u ai-daily.service -f` — preflight→chrome→orchestrate→teardown 실관측. **이게 오늘치(2026-07-04)를 실제 발행함**(의도된 동작).
-> - **주의(수용된 ceiling):** SIGKILL로 tick 죽으면 finally/killpg 스킵 → Chrome 고아 → 프로필 잠금 → 다음날 reddit degrade(새 버그 아님). WSL 완전다운 시 타이머·알림 미발화(§270 SPOF).
+> ## 🔴🔴 P0 — ai-daily 발행 전면 다운 (미해결, 최우선)
+> **`claude -p`가 select TASK(복잡 추론+대형 JSON 출력)에서 무응답 행**(stdout 0·stderr 0·no 429, 340s간). newsNblog도 껐으므로 **데일리 제품이 오늘부터 다운.** 타이머는 정지시켜둠.
+> - **철저 진단(재현 안 하려면 읽기):** 크기·내용·`--tools` 플래그·systemd·MCP·심링크 전부 **아님**. 판별: tiny prompt OK / **99KB candidate 내용+"reply OK"(trivial 생성) OK** / **50개 select TASK도 행**. 즉 입력 아니라 **선별 생성 작업 자체**. 2026-07-03엔 됨(138→16) → **2026-07-04 발생.** claude `2.1.198→2.1.200` 업데이트(08:44 KST) 겸 **이 세션이 claude -p 수백 회 호출**(subagent+Codex+진단 18라운드).
+> - **유력 2가설(미확정):** ①claude 2.1.200 회귀 ②세션 레이트리밋(긴 생성만 스로틀). **silent 340s 행(0/0/no-429)은 클라측/생성stall 쪽으로 약간 기욺**(서버 레이트리밋은 보통 에러 반환). 둘 다 **파이프라인 코드 밖.**
+> - **다음 세션 playbook(순서대로):**
+>   1. **먼저 fresh/idle 세션서 실 select 재시도**(레이트리밋 배제): `cd NBs && export PATH="$HOME/.local/bin:$PATH" && timeout 200 python3 -m nbs.select --date <오늘>`. 되면 transient(코드 무결), 안 되면 →2.
+>   2. **slow-vs-stuck 확정:** `claude -p --tools "__no_tools__" --strict-mcp-config --output-format stream-json --verbose < /tmp/selprompt.txt > /tmp/ev.json`(파이프 금지, 긴 timeout) 후 `/tmp/ev.json` 읽기 — init/system 이벤트 후 stall=생성/API, 무이벤트=클라 startup.
+>   3. 회귀 확정 시: `npm i -g @anthropic-ai/claude-code@2.1.198` 다운그레이드 테스트 + 버그 리포트. (주의: 스모크는 198서도 행했으나 그때도 레이트리밋 겹쳤을 수 있음.)
+>   - **재현 자산 남김:** `/tmp/selprompt.txt`(실 select 프롬프트 121K), `runs/2026-07-04/candidates.json`(132개).
 >
-> **다음 재개점 = P3d(관측성/알림)** brainstorm, 또는 위 스모크 먼저. 앞선 즉시항목 전부 ✅: ~~①메일 실발송~~ **DONE**(newsNblog OAuth Desktop client_secret 재사용→`~/.config/ai-daily/`에 0600 배치, 사람이 reauth로 gmail.send 토큰 발급, 실발송 성공 gmail id `19f280cc4d145929`, 재실행=`already_sent` 멱등 확인). ~~②generate.py title-YAML sanitize~~ **DONE**(branch `fix/generate-title-yaml-sanitize`, `_sanitize_title` at `_strip_fences` seam=blog/usecase/ax 공통, Hugo 0.163.3 RED→GREEN 실증, advisor+Codex xhigh 2R, 214 passed). 상세 = 아래 §2.8 오늘 실황.
+> ## P3c 스케줄러 (코드 done·머지, 발행은 P0로 막힘)
+> 스모크가 통합경로(preflight→schedule-lock→ensure_chrome **reddit degrade 실증**→collect **132개 수집**)를 **정상 구동**하다 select(claude -p)서 P0로 죽음 = P3c 코드 무결. 타이머 정지(`systemctl --user disable --now ai-daily.timer ai-daily-alert.timer` 완료). **재활성 = P0 해결 후 `bash scripts/install_scheduler.sh`.** 실행검증(1회 Chrome 프로필 셋업=Browser-Bridge 확장+reddit 로그인 + `systemctl --user start ai-daily.service`)은 P0 해결 후.
+>
+> ## sentinel fix (각주 — 별개 버그, 머지됨, 발행 복구 아님)
+> `--tools ""`(빈 인자)가 대형 stdin서 claude 데드락 = P0와 **별개** 진짜 버그. `--tools "__no_tools__"`(tools:[] 보안 동일, 인젝션 거부 verified)로 교체, 양 caller(select+generate→usecase/ax). advisor+Codex R1 통과. **미결 minor:** `NOTOOLS`가 select.py·generate.py **중복**(동기화 유지 or config.py로 hoist) · 스펙§10/prompts 등 docs가 아직 `--tools ""` 언급(런타임은 NOTOOLS).
+>
+> **다음 재개점 = 위 P0 playbook** (그 후 P3c 실행검증 → P3d 관측성). 앞선 즉시항목 전부 ✅: ~~①메일 실발송~~ **DONE**(newsNblog OAuth Desktop client_secret 재사용→`~/.config/ai-daily/`에 0600 배치, 사람이 reauth로 gmail.send 토큰 발급, 실발송 성공 gmail id `19f280cc4d145929`, 재실행=`already_sent` 멱등 확인). ~~②generate.py title-YAML sanitize~~ **DONE**(branch `fix/generate-title-yaml-sanitize`, `_sanitize_title` at `_strip_fences` seam=blog/usecase/ax 공통, Hugo 0.163.3 RED→GREEN 실증, advisor+Codex xhigh 2R, 214 passed). 상세 = 아래 §2.8 오늘 실황.
 
 ## 1. 프로젝트 한 줄
 `newsNblog`의 **대체재**. 매일 AI 뉴스를 **News 인덱스(짧게) → 각 항목 Blog 상세글(외국어 원문의 한글 최대 상세 해설) + AI UseCase(일반 사용자용)** 로 자동 발행. 검증되면 기존 newsNblog 폐기.
