@@ -17,6 +17,11 @@ def test_run_claude_disables_tools_and_uses_stdin(monkeypatch):
     # tools: [] (zero tools, §10) — verified live — so security is unchanged.
     ti = seen["cmd"].index("--tools")
     assert seen["cmd"][ti + 1] == select.NOTOOLS and seen["cmd"][ti + 1] != ""
+    # regression: effort PINNED to low. Without it, claude -p inherits settings.json effortLevel
+    # (xhigh) and the dedup task thinks past the timeout (2026-07-04 P0).
+    assert seen["cmd"].count("--effort") == 1   # exactly one; a later dup could override the value
+    ei = seen["cmd"].index("--effort")
+    assert seen["cmd"][ei + 1] == "low"
     assert seen["input"] == "hello" and seen["timeout"] == 7
 
 def test_run_claude_default_timeout_is_300(monkeypatch):
