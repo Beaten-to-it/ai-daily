@@ -221,7 +221,7 @@ def render_text(md: str, web_url: str) -> str:
 
 # --- MIME message + recipients ----------------------------------------------
 
-DEFAULT_RECIPIENTS = ["kimhyo75@gmail.com"]
+DEFAULT_RECIPIENTS = ["kimhyo75@gmail.com", "hyesun83.kim@samsung.com"]
 EMAIL_SENDER = "kimhyo75@gmail.com"   # From: header = authenticated token owner (Gmail userId stays "me")
 
 

@@ -226,7 +226,7 @@ def test_render_text_has_url_footer():
 
 def test_default_recipient():
     from nbs import email as em
-    assert em.resolve_recipients("") == ["kimhyo75@gmail.com"]
+    assert em.resolve_recipients("") == ["kimhyo75@gmail.com", "hyesun83.kim@samsung.com"]
 
 
 def test_recipient_override_split_dedupe():
