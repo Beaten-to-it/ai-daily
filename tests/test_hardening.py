@@ -316,3 +316,15 @@ def test_stage_skips_unhashable_event_key(tmp_path, monkeypatch):
     out = stage.run(date, fetch=_fetch, generate=_gen, usecase=lambda *a, **k: None, ax=lambda *a, **k: None)
     assert out["status"] == "ok"                          # no crash on unhashable []
     assert captured["keys"] == ["good"]                   # the [] key was skipped, not mapped
+
+
+# LOW-R4: fetch_sns matches HOST, not substring (notx.com/max.com must NOT route to the twitter CLI)
+def test_fetch_sns_host_match_not_substring(monkeypatch):
+    called = {"twitter": 0}
+    def fake_run(argv, **k):
+        if argv and argv[0] == "twitter": called["twitter"] += 1
+        raise AssertionError("no CLI should run for a non-platform host")
+    monkeypatch.setattr(fetch.subprocess, "run", fake_run)
+    # notx.com contains the substring "x.com" but is NOT x.com -> must be rejected, twitter not called
+    r = fetch.fetch_sns({"url": "https://notx.com/status/123"})
+    assert r == ("", "sns-bad-host", False) and called["twitter"] == 0

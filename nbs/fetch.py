@@ -187,7 +187,9 @@ def _extract_tweets(raw):
 
 def fetch_sns(item):
     url = item.get("url", "")
-    if "twitter.com" in url or "x.com" in url:
+    # host match, NOT substring: `"x.com" in url` also matches notx.com/max.com — which the twitter
+    # CLI would then fetch by extracting the numeric id, publishing evidence unrelated to source_url.
+    if _host_in(url, ("x.com", "twitter.com")):
         try:
             # Step 0-verified: no `twitter thread` subcommand exists. `twitter tweet
             # <url> --json` returns the same {"ok":..,"data":[...]} envelope; --max 1
