@@ -92,24 +92,26 @@ def check_completeness(gen, staging):
         errs.append(f"news links {sorted(linked)} != ok slugs {sorted(slugs)}")
     return errs
 
-_GIT_TIMEOUT = 120
-
-def _git(args, timeout=_GIT_TIMEOUT):
-    # env per call (GIT_TERMINAL_PROMPT=0 => a credential prompt fails fast, never hangs on stdin);
-    # NOT snapshotted at import, so runtime GIT_CONFIG_*/env overrides are honored.
+def _git(args, timeout=None):
+    # publish runs only LOCAL git ops (commit/add/status/cat-file/ls-tree/show/rev-parse) — these
+    # fail fast, they never hang, so no timeout (a synthetic timeout rc would masquerade as a real
+    # git answer). GIT_TERMINAL_PROMPT=0 so a credential prompt on commit fails fast, never hangs.
+    # env per call (not snapshotted at import) so runtime GIT_CONFIG_*/env overrides are honored.
     try:
         return subprocess.run(["git"] + args, cwd=str(ROOT), capture_output=True, text=True,
                               timeout=timeout, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
     except subprocess.TimeoutExpired:
         return subprocess.CompletedProcess(args, returncode=124, stdout="", stderr="git timed out")
-def _head_has(rel): return _git(["cat-file", "-e", f"HEAD:{rel}"]).returncode == 0
 
 def date_writeset(gen):
     date = gen["date"]
     posts = {str(p.relative_to(ROOT)) for p in (ROOT/"content"/"posts").glob(f"{date}-*.md")}
     # R2-#3: union with HEAD-tracked same-date posts so a worktree-deleted-but-tracked
     # stale post is still in scope (glob only sees files present on disk).
-    posts |= set(_git(["ls-files", "--", f"content/posts/{date}-*.md"]).stdout.split())
+    lf = _git(["ls-files", "--", f"content/posts/{date}-*.md"])
+    if lf.returncode != 0:            # fail CLOSED: an incomplete write-set would skip rollback/add
+        raise RuntimeError(f"ls-files failed (rc={lf.returncode}); cannot compute write-set")
+    posts |= set(lf.stdout.split())
     posts |= {f"content/posts/{r['slug']}.md" for r in _ok(gen)}
     return sorted(posts) + [f"content/news/{date}.md", f"content/usecase/{date}.md",
                             f"content/ax/{date}.md", "data/published.csv"]
@@ -148,18 +150,19 @@ def promote(gen, staging):
 
 def rollback(paths):
     for rel in paths:
-        # branch on the cat-file rc: 0 = in HEAD; a real "absent" answer is rc 1 OR 128 (git returns
-        # 128 for a path missing from HEAD's tree); 124 is OUR synthetic timeout marker (_git). A
-        # timeout must NOT be read as "absent" and unlink a possibly-TRACKED file (data loss) — fail
-        # CLOSED on 124 by unstaging only and leaving the worktree file in place.
-        r = _git(["cat-file", "-e", f"HEAD:{rel}"])
-        if r.returncode == 0:                              # tracked in HEAD -> restore
+        # ls-tree cleanly separates the three cases cat-file conflates (cat-file returns rc 128 for
+        # BOTH a missing path AND a corrupt repo): rc 0 + non-empty stdout = tracked, rc 0 + empty =
+        # CONFIRMED absent, rc != 0 = git error. Only unlink on a positively-confirmed absence — a
+        # git error (or timeout) must NEVER delete a possibly-tracked worktree file (data loss).
+        r = _git(["ls-tree", "HEAD", "--", rel])
+        if r.returncode == 0 and r.stdout.strip():         # tracked in HEAD -> restore
             _git(["restore", "--staged", "--worktree", "--source=HEAD", "--", rel])
-        else:
-            _git(["reset", "-q", "--", rel])               # always unstage (no-op if not staged)
-            if r.returncode != 124:                        # real git "absent" (1/128) -> remove untracked
-                p = ROOT / rel
-                if p.exists(): p.unlink()                  # (124 = timeout -> keep the file, fail closed)
+        elif r.returncode == 0:                            # confirmed absent -> unstage + remove
+            _git(["reset", "-q", "--", rel])
+            p = ROOT / rel
+            if p.exists(): p.unlink()
+        else:                                              # git error -> fail CLOSED: unstage only, keep file
+            _git(["reset", "-q", "--", rel])
 
 def _hugo_build(outdir):
     # no pipe: exit code must survive. Uses hugo.toml baseURL (=/ai-daily/).
@@ -264,8 +267,14 @@ def run(date, *, do_commit=True):
         if do_commit:
             # R2-#1: `git add -- <pathspec>` fails (rc 128) on a ws path that neither exists
             # nor is in HEAD (e.g. usecase on a degraded day). Add only real paths; keep full
-            # `ws` for the staged-subset check and rollback.
-            add_paths = [p for p in ws if (ROOT/p).exists() or _head_has(p)]
+            # `ws` for the staged-subset check and rollback. The HEAD-tracked subset comes from ONE
+            # CHECKED ls-tree — fail closed if it errors, so a git failure can't silently drop a
+            # staged DELETION of a tracked file (which would leave a stale page in HEAD/origin).
+            lt = _git(["ls-tree", "-r", "--name-only", "HEAD", "--"] + ws)
+            if lt.returncode != 0:
+                raise RuntimeError(f"ls-tree failed (rc={lt.returncode}); cannot determine tracked set")
+            tracked = set(lt.stdout.split())
+            add_paths = [p for p in ws if (ROOT/p).exists() or p in tracked]
             if _git(["add", "-A", "--"] + add_paths).returncode != 0:
                 raise RuntimeError("git add failed")
             staged = [l for l in _git(["diff","--cached","--name-only"]).stdout.splitlines() if l.strip()]

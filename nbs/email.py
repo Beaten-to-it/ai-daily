@@ -47,6 +47,11 @@ _ORIGIN = "origin/main"
 
 
 def _origin_show(rel: str) -> str | None:
+    # `git show origin/main:<rel>` is a LOCAL ref read (no network, no timeout under Option B), so a
+    # non-zero rc here is a genuine "absent" (rc 128) — usecase/ax legitimately absent -> section
+    # omitted. A corrupt-repo rc 128 read as "absent" is a pre-existing residual that git show's rc
+    # cannot distinguish from a real absence; accepted (extremely rare, and the news gate would also
+    # fail on the same corruption, blocking the email entirely rather than sending it truncated).
     r = publish._git(["show", f"{_ORIGIN}:{rel}"])
     return r.stdout if r.returncode == 0 else None
 

@@ -142,9 +142,17 @@ def _gen_one(item, fetched, date, render, timeout, retries):
             last = str(e)[:200]
     return GenerationResult(status="failed", post_path=None, error=last, **base)
 
+def _mapped(ek, fetched_map):
+    # an unhashable event_key (corrupt selection.json: `"event_key": []`) can't be a map key -> not
+    # generatable; `in` would raise TypeError, so guard it (stage already skipped adding such keys).
+    try:
+        return ek in fetched_map
+    except TypeError:
+        return False
+
 def generate_all(items, fetched_map, date, *, max_workers=4, timeout=GEN_TIMEOUT, retries=1, render=None):
     render = render or render_blog
-    todo = [it for it in items if it.get("event_key") in fetched_map]
+    todo = [it for it in items if _mapped(it.get("event_key"), fetched_map)]
     out = []
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = {ex.submit(_gen_one, it, fetched_map[it["event_key"]], date,

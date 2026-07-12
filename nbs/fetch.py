@@ -97,7 +97,9 @@ class _SSRFGuardedRedirect(urllib.request.HTTPRedirectHandler):
     # internal GET already happened, and a redirect back out to a public host would then pass the
     # final check). Returning None suppresses the redirect (urllib returns the 3xx response as-is).
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not _host_is_public(newurl):
+        # reject the hop unless it is http(s) to a public host: urllib otherwise follows ftp://
+        # redirect targets (off-policy egress) and internal hosts (SSRF) before the caller can check.
+        if urlsplit(newurl).scheme not in ("http", "https") or not _host_is_public(newurl):
             return None
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -200,7 +202,10 @@ def fetch_sns(item):
         except Exception:
             pass
         return "", "twitter", False
-    # reddit via opencli needs Chrome; guard-skip if unavailable
+    # reddit via opencli needs Chrome; guard-skip if unavailable. Restrict to reddit hosts so an
+    # arbitrary public url can't be handed to `opencli reddit read` (keeps this backend platform-scoped).
+    if not _host_in(url, ("reddit.com",)):
+        return "", "sns-bad-host", False
     try:
         r = subprocess.run(["opencli", "reddit", "read", url],
                            capture_output=True, text=True, timeout=60)
@@ -233,7 +238,20 @@ def _strip_srt(raw):
         out.append(s)
     return "\n".join(out)
 
+_VIDEO_HOSTS = ("youtube.com", "youtu.be", "vimeo.com")   # yt-dlp follows its OWN redirects and makes
+# secondary requests we can't inspect, so a public->internal redirect would still let it probe internal
+# hosts. Restrict video inputs to known platforms (SSRF can't be steered at an arbitrary/internal host).
+
+def _hostname(url):
+    return (urlsplit(url).hostname or "").lower()
+
+def _host_in(url, hosts):
+    h = _hostname(url)
+    return any(h == d or h.endswith("." + d) for d in hosts)
+
 def fetch_video(url):
+    if not _host_in(url, _VIDEO_HOSTS):
+        return "", "yt-dlp-bad-host", False
     try:
         with tempfile.TemporaryDirectory() as td:
             r = subprocess.run(

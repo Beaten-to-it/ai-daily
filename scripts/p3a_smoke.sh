@@ -8,5 +8,5 @@ set -euo pipefail
 DATE="${1:?usage: p3a_smoke.sh <date>}"
 export PATH="$HOME/.local/bin:$PATH"
 python3 -m nbs.orchestrate --date "$DATE" --no-commit
-echo "--- run.json ---"; cat "runs/$DATE/run.json"
+echo "--- run.json ---"; cat "runs/$DATE/run.json" 2>/dev/null || echo "(no run.json — see the [status] line above, e.g. a refused no-commit preview)"
 echo "--- publish.json ---"; cat "runs/$DATE/publish.json" 2>/dev/null || true

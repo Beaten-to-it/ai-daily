@@ -36,10 +36,17 @@ def run(date, *, fetch=None, generate=None, usecase=None, ax=None):
         # (don't coerce) anything outside the slug charset: slugifying could map two
         # distinct keys onto one path -> silent overwrite. Isolate as excluded, no writes.
         # isinstance guard FIRST: schema allows `"event_key": null`, and _EVENT_KEY_RE.match(None)
-        # raises TypeError HERE (outside the try) -> one bad field would abort the whole day.
+        # raises TypeError HERE (outside the try) -> one bad field would abort the whole day. A
+        # non-str key (list/dict) is ALSO unhashable, so it can't index fetched_map at all — skip it
+        # entirely (generate() drops items whose event_key isn't a live map key). Only str keys get
+        # an excluded entry. (The normal pipeline never reaches this: validate_selection rejects a
+        # non-str/empty event_key upstream; this guards a directly-invoked / corrupt selection.json.)
         if not isinstance(ek, str) or not _EVENT_KEY_RE.match(ek):
-            fetched_map[ek] = FetchResult(event_key=ek, url=it.get("url",""), source_type=st,
-                text="", evidence_level="exclude", via="invalid-key", fetch_ok=False)
+            try:
+                fetched_map[ek] = FetchResult(event_key=ek, url=it.get("url",""), source_type=st,
+                    text="", evidence_level="exclude", via="invalid-key", fetch_ok=False)
+            except TypeError:      # unhashable event_key (list/dict) -> can't map it; generate drops it
+                pass
             continue
         try:                                     # §5: one item's fetch failure must not abort the run
             fr = fetch(it)

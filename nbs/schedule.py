@@ -7,12 +7,10 @@ from . import email as _email
 _CHROME_PROFILE = _email.config_dir() / "chrome-profile"
 
 def _git(root, *args):
-    # env per call (never snapshot os.environ at import — that ignores runtime GIT_CONFIG_* overrides).
-    try:
-        return subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True,
-                              timeout=120, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(args, returncode=124, stdout="", stderr="git timed out")
+    # schedule runs only LOCAL git ops (status/config) — they fail fast, never hang, so no timeout.
+    # GIT_TERMINAL_PROMPT=0 so a credential prompt fails fast. env per call (not import-snapshotted).
+    return subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True,
+                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
 
 def _git_credentials_present():
     return (Path.home() / ".git-credentials").exists()

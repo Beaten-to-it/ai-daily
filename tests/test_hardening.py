@@ -96,15 +96,28 @@ def test_git_timeout_returns_124(monkeypatch):
     assert r.returncode == 124                              # treated as ordinary git failure
 
 
-def test_git_sets_terminal_prompt_off(monkeypatch):
+def test_git_local_op_has_no_timeout_but_prompt_off(monkeypatch):
     seen = {}
     class _R: returncode = 0; stdout = ""; stderr = ""
     def cap(cmd, **k):
         seen["env"] = k.get("env"); seen["timeout"] = k.get("timeout"); return _R()
     monkeypatch.setattr(orchestrate.subprocess, "run", cap)
-    orchestrate._git(["status"])
+    orchestrate._git(["status"])                          # LOCAL op: no timeout (never hangs)
     assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
-    assert seen["timeout"] == orchestrate._GIT_TIMEOUT
+    assert seen["timeout"] is None
+
+def test_push_and_ls_remote_carry_network_timeout(monkeypatch):
+    # CRITICAL-3 guard: the two NETWORK ops MUST pass the bounded timeout, else a hang returns.
+    seen = {}
+    class _R:
+        returncode = 1; stdout = ""; stderr = ""
+    def cap(cmd, **k):
+        seen[cmd[1]] = k.get("timeout"); return _R()      # cmd[1] = the git subcommand
+    monkeypatch.setattr(orchestrate.subprocess, "run", cap)
+    orchestrate._classify_push_failure("deadbeef")        # calls ls-remote
+    assert seen["ls-remote"] == orchestrate._GIT_NET_TIMEOUT
+    orchestrate._push("2026-07-12")                       # calls push (returncode 1 -> classify)
+    assert seen["push"] == orchestrate._GIT_NET_TIMEOUT
 
 
 # --- H5: --no-commit threads through only to publish, and implies --no-push --
@@ -126,6 +139,7 @@ def test_no_commit_implies_no_push(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrate, "ROOT", tmp_path)
     monkeypatch.setattr(orchestrate, "_default_email_runner",
                         lambda date, run_id: (0, {"status": "not_published"}))
+    monkeypatch.setattr(orchestrate, "_head_has_news", lambda date: False)   # unpublished -> guard passes
     monkeypatch.setattr(orchestrate, "decide_action", lambda date, *, force: "full")
     def _pushed(date): raise AssertionError("_push must not run under no_commit")
     monkeypatch.setattr(orchestrate, "_push", _pushed)
@@ -197,21 +211,21 @@ def test_rollback_keeps_file_on_git_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(publish, "ROOT", tmp_path)
     f = tmp_path / "content" / "posts" / "x.md"; f.parent.mkdir(parents=True); f.write_text("keep")
     def fake_git(args, **k):
-        if args[0] == "cat-file": return subprocess.CompletedProcess(args, 124, "", "t/o")  # timeout
+        if args[0] == "ls-tree": return subprocess.CompletedProcess(args, 124, "", "t/o")  # timeout/error
         return subprocess.CompletedProcess(args, 0, "", "")
     monkeypatch.setattr(publish, "_git", fake_git)
     publish.rollback(["content/posts/x.md"])
-    assert f.exists()                                    # 124 -> NOT unlinked (fail closed)
+    assert f.exists()                                    # git error -> NOT unlinked (fail closed)
 
 def test_rollback_removes_untracked_on_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(publish, "ROOT", tmp_path)
     f = tmp_path / "content" / "posts" / "x.md"; f.parent.mkdir(parents=True); f.write_text("new")
     def fake_git(args, **k):
-        if args[0] == "cat-file": return subprocess.CompletedProcess(args, 128, "", "absent")  # real absent
+        if args[0] == "ls-tree": return subprocess.CompletedProcess(args, 0, "", "")  # rc0 + EMPTY = absent
         return subprocess.CompletedProcess(args, 0, "", "")
     monkeypatch.setattr(publish, "_git", fake_git)
     publish.rollback(["content/posts/x.md"])
-    assert not f.exists()                                # rc 128 (absent) -> removed
+    assert not f.exists()                                # confirmed absent (rc0, empty) -> removed
 
 
 # MEDIUM-R2-1: validate_selection type-guards LLM fields so a malformed one is a clean reject
@@ -238,4 +252,67 @@ def test_no_commit_refused_when_date_in_head(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrate, "_head_has_news", lambda date: True)
     def runner(name, date): raise AssertionError("must refuse BEFORE running any stage")
     m = orchestrate.run("2026-07-12", no_commit=True, runner=runner)
-    assert m["status"] == "skipped" and "already published" in m["reason"]
+    assert m["status"] == "skipped" and "refused" in m["reason"]
+
+
+# ============ round-3: Option B (git-timeout scoping) + SSRF completeness ====
+
+from nbs import generate
+
+# H-R3-3: _head_has_news is tri-state; a git error -> None so decide_action aborts (not re-publish)
+def test_head_has_news_tristate(monkeypatch):
+    mode = {"v": "present"}
+    def g(args, **k):
+        return {"present": subprocess.CompletedProcess(args, 0, "100644 blob ab\tcontent/news/x.md\n", ""),
+                "absent":  subprocess.CompletedProcess(args, 0, "", ""),
+                "error":   subprocess.CompletedProcess(args, 128, "", "fatal")}[mode["v"]]
+    monkeypatch.setattr(orchestrate, "_git", g)
+    mode["v"] = "present"; assert orchestrate._head_has_news("2026-07-12") is True
+    mode["v"] = "absent";  assert orchestrate._head_has_news("2026-07-12") is False
+    mode["v"] = "error";   assert orchestrate._head_has_news("2026-07-12") is None
+
+def test_decide_action_aborts_on_head_error(monkeypatch):
+    monkeypatch.setattr(orchestrate, "_head_has_news", lambda d: None)
+    assert orchestrate.decide_action("2026-07-12", force=False) == "error"    # can't tell -> abort
+    assert orchestrate.decide_action("2026-07-12", force=True) == "full"      # force bypasses
+
+# H-R3-2: yt-dlp video backend restricted to known platforms (can't be steered at an internal host)
+def test_fetch_video_host_allowlist():
+    assert fetch.fetch_video("http://127.0.0.1/x")[1] == "yt-dlp-bad-host"
+    assert fetch.fetch_video("http://evil.example/clip")[1] == "yt-dlp-bad-host"
+    assert fetch._host_in("https://www.youtube.com/watch?v=1", fetch._VIDEO_HOSTS) is True
+    assert fetch._host_in("https://youtu.be/abc", fetch._VIDEO_HOSTS) is True
+
+# LOW-R3-1: a redirect to a non-http(s) scheme (ftp://) is suppressed even to a public host
+def test_redirect_rejects_non_http_scheme():
+    h = fetch._SSRFGuardedRedirect()
+    assert h.redirect_request(None, None, 302, "F", {}, "ftp://8.8.8.8/f") is None
+
+# LOW-R3-3: an unhashable event_key never crashes generate's membership test
+def test_generate_mapped_handles_unhashable():
+    assert generate._mapped([], {"k": 1}) is False       # unhashable -> False, no TypeError
+    assert generate._mapped("k", {"k": 1}) is True
+    assert generate._mapped("z", {"k": 1}) is False
+
+def test_stage_skips_unhashable_event_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(stage, "run_dir", lambda date: tmp_path / date)
+    date = "2026-07-12"; d = tmp_path / date; d.mkdir(parents=True)
+    items = [{"event_key": [], "title": "t", "url": "https://x/0", "source": "S", "source_type": "article",
+              "evidence_type": "article", "dedup": "new", "prior_post_path": None, "rank": 0, "rationale": "r"},
+             {"event_key": "good", "title": "t", "url": "https://x/1", "source": "S", "source_type": "article",
+              "evidence_type": "article", "dedup": "new", "prior_post_path": None, "rank": 1, "rationale": "r"}]
+    (d / "selection.json").write_text(json.dumps(
+        {"date": date, "items": items, "selected_count": 2, "skipped_count": 0, "generated_with": "t"}),
+        encoding="utf-8")
+    captured = {}
+    def _gen(items, fmap, date, **kw):
+        captured["keys"] = list(fmap.keys())
+        return [GenerationResult(event_key="good", title="t", url=it["url"], source="S",
+                source_type="article", evidence_level="confirmed", status="ok",
+                post_path=f"posts/{date}-good.md", slug=f"{date}-good", rank=it["rank"], rationale="r")
+                for it in items if generate._mapped(it.get("event_key"), fmap)]
+    def _fetch(item):
+        return FetchResult(item["event_key"], item["url"], "article", "t" * 50, "confirmed", "http", True)
+    out = stage.run(date, fetch=_fetch, generate=_gen, usecase=lambda *a, **k: None, ax=lambda *a, **k: None)
+    assert out["status"] == "ok"                          # no crash on unhashable []
+    assert captured["keys"] == ["good"]                   # the [] key was skipped, not mapped
