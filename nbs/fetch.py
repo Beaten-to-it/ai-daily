@@ -41,37 +41,93 @@ def classify_evidence(source_type, text, *, paywall_marker=False, fetch_ok=True)
         return "exclude"
     return "confirmed" if n >= MIN_ARTICLE_CHARS else "short"
 
-import json, subprocess, tempfile, os, glob, urllib.request
+import json, subprocess, tempfile, os, glob, urllib.request, time, socket, ipaddress
 from urllib.parse import urlsplit
 from .models import FetchResult
 
 _UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 nbs-daily/0.1"
+MAX_FETCH_BYTES = 8_000_000   # raw-response memory cap (evidence is later capped to 40K chars);
+                              # bounds OOM from a hostile/huge body BEFORE it is fully resident.
+FETCH_DEADLINE = 45.0         # per-fetch TOTAL wall-clock ceiling. urllib/requests timeouts are
+                              # per-read (reset on every byte) — a slow-drip server never trips them
+                              # and would hang forever holding both run locks. This bounds total time.
+
+def _host_is_public(url):
+    # §10 SSRF guard: a candidate URL is untrusted (LLM/RSS/HN-derived). Block any host that
+    # resolves to a non-global address (loopback/private/link-local/CGNAT/multicast/unspecified)
+    # so an internal service cannot become published evidence. is_global covers 100.64/10 (CGNAT).
+    # ponytail: resolve-then-check on the request URL + the final redirect URL; NOT rebinding-proof
+    # (urllib re-resolves at connect). Full protection = pinning the resolved IP through the socket;
+    # deferred (personal host, no state-changing internal GET endpoints) — upgrade if that changes.
+    host = urlsplit(url).hostname
+    if not host:
+        return False
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError, ValueError):
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            if not ipaddress.ip_address(info[4][0]).is_global:
+                return False
+        except ValueError:
+            return False
+    return True
+
+def _read_capped(reader):
+    # Read a file-like (urllib response) in chunks under a TOTAL deadline + byte cap. Each read()
+    # is still socket-timeout-bounded; the deadline bounds a steady drip that never times out.
+    deadline = time.monotonic() + FETCH_DEADLINE
+    buf = bytearray()
+    while len(buf) <= MAX_FETCH_BYTES and time.monotonic() < deadline:
+        chunk = reader.read(65536)
+        if not chunk:
+            break
+        buf += chunk
+    return bytes(buf[:MAX_FETCH_BYTES])
 
 def _http_get(url, timeout=20):
+    if not _host_is_public(url):          # §10: block internal/non-global destinations (SSRF)
+        return "", False
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            # §10: a redirect can land off-web (urllib allows ftp:// redirect targets);
-            # re-check the FINAL url's scheme so a redirect can't smuggle in a non-http read.
-            if urlsplit(r.geturl()).scheme not in ("http", "https"):
+            # §10: a redirect can land off-web (urllib allows ftp:// redirect targets) or on an
+            # internal host; re-check the FINAL url's scheme AND that it resolves to a public IP.
+            if urlsplit(r.geturl()).scheme not in ("http", "https") or not _host_is_public(r.geturl()):
                 return "", False
-            return r.read().decode("utf-8", "replace"), True
+            return _read_capped(r).decode("utf-8", "replace"), True
     except Exception:
         return "", False
 
 def _jina(url, timeout=30):
-    # Jina Reader renders JS + returns clean markdown; public content only (§11)
+    # Jina Reader renders JS + returns clean markdown; public content only (§11). The target url
+    # is embedded in jina's PATH (server-side fetch by jina), so the SSRF guard here is jina's
+    # own public host — the inner url can't reach OUR internal network via this path.
     text, ok = _http_get("https://r.jina.ai/" + url, timeout=timeout)
     return text if ok else ""
 
 def _curl_impersonate(url, timeout=30):
+    if not _host_is_public(url):          # §10: SSRF guard (same as _http_get)
+        return ""
     try:
         from curl_cffi import requests as creq
-        r = creq.get(url, impersonate="chrome", timeout=timeout)
-        # §10: libcurl follows redirects and supports file://; enforce the FINAL url is web.
-        if r.status_code == 200 and urlsplit(str(r.url)).scheme in ("http", "https"):
-            return r.text
-        return ""
+        # stream=True + capped read so a hostile body can't OOM us (curl_cffi's timeout is total,
+        # so time is already bounded; this bounds memory).
+        with creq.get(url, impersonate="chrome", timeout=timeout, stream=True) as r:
+            # §10: libcurl follows redirects and supports file://; enforce the FINAL url is a public web host.
+            if r.status_code != 200 or urlsplit(str(r.url)).scheme not in ("http", "https") \
+               or not _host_is_public(str(r.url)):
+                return ""
+            deadline = time.monotonic() + FETCH_DEADLINE
+            buf = bytearray()
+            for chunk in r.iter_content(65536):
+                if len(buf) > MAX_FETCH_BYTES or time.monotonic() > deadline:
+                    break
+                buf += chunk or b""
+            return bytes(buf[:MAX_FETCH_BYTES]).decode("utf-8", "replace")
     except Exception:
         return ""
 

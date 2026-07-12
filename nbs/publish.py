@@ -1,5 +1,5 @@
 import re
-import subprocess, shutil, tempfile, argparse, json
+import subprocess, shutil, tempfile, argparse, json, os
 from pathlib import Path
 from . import assemble
 from . import ledger as ledger_mod
@@ -92,7 +92,16 @@ def check_completeness(gen, staging):
         errs.append(f"news links {sorted(linked)} != ok slugs {sorted(slugs)}")
     return errs
 
-def _git(args): return subprocess.run(["git"] + args, cwd=str(ROOT), capture_output=True, text=True)
+_GIT_TIMEOUT = 120
+
+def _git(args, timeout=_GIT_TIMEOUT):
+    # env per call (GIT_TERMINAL_PROMPT=0 => a credential prompt fails fast, never hangs on stdin);
+    # NOT snapshotted at import, so runtime GIT_CONFIG_*/env overrides are honored.
+    try:
+        return subprocess.run(["git"] + args, cwd=str(ROOT), capture_output=True, text=True,
+                              timeout=timeout, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, returncode=124, stdout="", stderr="git timed out")
 def _head_has(rel): return _git(["cat-file", "-e", f"HEAD:{rel}"]).returncode == 0
 
 def date_writeset(gen):

@@ -1,8 +1,9 @@
-import argparse, json, shutil, subprocess
+import argparse, json, shutil, subprocess, time
 from datetime import datetime, timedelta, timezone
 import feedparser, requests
 from .config import KST, run_dir
 from .models import Candidate, canonicalize_url
+from .fetch import MAX_FETCH_BYTES, FETCH_DEADLINE
 from . import sources
 
 def parse_rss(xml_bytes, feed):
@@ -33,8 +34,18 @@ def dedup_by_url(cands):
     return out
 
 def fetch_rss(feed, timeout=20):
-    r = requests.get(feed["url"], timeout=timeout, headers={"User-Agent":"nbs-collector/0.1"})
-    r.raise_for_status(); return parse_rss(r.content, feed)
+    # stream + TOTAL-deadline + byte cap: requests' timeout is per-read, so a slow-drip or huge
+    # feed body would otherwise hang/OOM the run while it holds both locks (see fetch.FETCH_DEADLINE).
+    with requests.get(feed["url"], timeout=timeout, stream=True,
+                      headers={"User-Agent":"nbs-collector/0.1"}) as r:
+        r.raise_for_status()
+        deadline = time.monotonic() + FETCH_DEADLINE
+        buf = bytearray()
+        for chunk in r.iter_content(65536):
+            if len(buf) > MAX_FETCH_BYTES or time.monotonic() > deadline:
+                break
+            buf += chunk or b""
+        return parse_rss(bytes(buf[:MAX_FETCH_BYTES]), feed)
 
 def parse_twitter_json(stdout, query):
     try: obj = json.loads(stdout or "[]")

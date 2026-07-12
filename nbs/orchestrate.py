@@ -23,8 +23,20 @@ def _lock():
     finally:
         f.close()   # closing the fd releases the flock
 
-def _git(args):
-    return subprocess.run(["git"] + args, cwd=str(ROOT), capture_output=True, text=True)
+# git network ops (push, ls-remote) run AFTER the content+ledger commit while both locks are held.
+# subprocess has no default timeout, so a stalled peer/credential-helper would hang the run forever
+# and block every later tick. Bound every git call; GIT_TERMINAL_PROMPT=0 turns a credential prompt
+# into an immediate failure instead of a silent stdin hang. A timeout surfaces as rc=124 (not an
+# exception), so callers treat it as an ordinary git failure (push -> push_pending -> retry next tick).
+_GIT_TIMEOUT = 120
+
+def _git(args, timeout=_GIT_TIMEOUT):
+    # env built PER CALL (not snapshotted at import) so runtime GIT_CONFIG_*/env overrides are honored.
+    try:
+        return subprocess.run(["git"] + args, cwd=str(ROOT), capture_output=True, text=True,
+                              timeout=timeout, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, returncode=124, stdout="", stderr="git timed out")
 
 def _head_has_news(date):
     return _git(["cat-file", "-e", f"HEAD:content/news/{date}.md"]).returncode == 0
@@ -56,9 +68,11 @@ STAGES = ["collect", "select", "stage", "publish"]
 _ARTIFACT = {"collect": "candidates.json", "select": "selection.json",
              "stage": "generation.json", "publish": "publish.json"}
 
-def _default_runner(name, date):
-    return subprocess.run(["python3", "-m", f"nbs.{name}", "--date", date],
-                          cwd=str(ROOT)).returncode
+def _default_runner(name, date, no_commit=False):
+    argv = ["python3", "-m", f"nbs.{name}", "--date", date]
+    if name == "publish" and no_commit:
+        argv.append("--no-commit")     # promote into content/ but DON'T commit (smoke-safe)
+    return subprocess.run(argv, cwd=str(ROOT)).returncode
 
 def _default_email_runner(date, run_id):
     try:
@@ -149,8 +163,10 @@ def _write_run(date, payload):
         os.path.exists(tmp) and os.remove(tmp); raise
     return payload
 
-def run(date, *, force=False, no_push=False, runner=None, now=None, email_runner=None):
-    runner = runner or _default_runner
+def run(date, *, force=False, no_push=False, no_commit=False, runner=None, now=None, email_runner=None):
+    if no_commit:
+        no_push = True   # nothing committed -> a push would send an unchanged HEAD; skip it (smoke-safe)
+    runner = runner or (lambda n, d: _default_runner(n, d, no_commit=no_commit))
     email_runner = email_runner or _default_email_runner
     now = now or datetime.now(config.KST)
     run_id = now.strftime("%Y%m%dT%H%M%S%z")
@@ -230,9 +246,10 @@ def main(argv=None):
     ap.add_argument("--date", default=None)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--no-push", action="store_true")
+    ap.add_argument("--no-commit", action="store_true")   # promote but don't commit/push (smoke)
     a = ap.parse_args(argv)
     date = a.date or _today()
-    m = run(date, force=a.force, no_push=a.no_push)
+    m = run(date, force=a.force, no_push=a.no_push, no_commit=a.no_commit)
     push = (m.get("stages", {}) or {}).get("push", {}).get("status", "-")
     print(f"[{m['status']}] {date} push={push} reason={m.get('reason','')}")
     return _STATUS_EXIT.get(m["status"], 1)

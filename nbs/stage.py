@@ -35,7 +35,9 @@ def run(date, *, fetch=None, generate=None, usecase=None, ax=None):
         # event_key is LLM output and becomes a fetched filename + post slug/path. REJECT
         # (don't coerce) anything outside the slug charset: slugifying could map two
         # distinct keys onto one path -> silent overwrite. Isolate as excluded, no writes.
-        if not _EVENT_KEY_RE.match(ek):
+        # isinstance guard FIRST: schema allows `"event_key": null`, and _EVENT_KEY_RE.match(None)
+        # raises TypeError HERE (outside the try) -> one bad field would abort the whole day.
+        if not isinstance(ek, str) or not _EVENT_KEY_RE.match(ek):
             fetched_map[ek] = FetchResult(event_key=ek, url=it.get("url",""), source_type=st,
                 text="", evidence_level="exclude", via="invalid-key", fetch_ok=False)
             continue

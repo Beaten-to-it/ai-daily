@@ -7,13 +7,14 @@ cp "$SRC"/ai-daily.service "$SRC"/ai-daily.timer \
    "$SRC"/ai-daily-alert.service "$SRC"/ai-daily-alert.timer "$UNIT_DIR/"
 systemctl --user daemon-reload
 
-# The unit PATH is %h/.local/bin:...  but `claude` and `opencli` live under nvm, not there.
-# Symlink them in so the unattended tick can find them. MUST run BEFORE `enable --now` —
+# The unit PATH is %h/.local/bin:...  but `claude`, `opencli`, and `twitter` live under nvm, not
+# there. Symlink them in so the unattended tick can find them. MUST run BEFORE `enable --now` —
 # Persistent=true can fire a missed catch-up tick the instant the timer is enabled, and that
 # tick needs the CLIs already on PATH. NOTE: pins the current nvm version dir — re-run this
-# installer after a Node upgrade if the symlink dangles.
+# installer after a Node upgrade if the symlink dangles. (twitter omitted here silently drops
+# ALL X coverage on every unattended tick — collect.fetch_x guard-skips when it's not on PATH.)
 mkdir -p "$HOME/.local/bin"
-for cli in claude opencli; do
+for cli in claude opencli twitter; do
   src="$(command -v "$cli" || true)"
   if [ -n "$src" ] && [ "$src" != "$HOME/.local/bin/$cli" ]; then ln -sf "$src" "$HOME/.local/bin/$cli"; echo "symlinked $cli -> $src";
   else echo "[warn] $cli not found on PATH — publish/Reddit will degrade until installed"; fi
