@@ -11,4 +11,4 @@ echo "--- publish.json ---"; cat "runs/$DATE/publish.json"
 echo "--- content added ---"; ls -1 content/posts/ | grep "$DATE" || true
 ls -1 "content/news/$DATE.md" "content/usecase/$DATE.md" 2>/dev/null || true
 echo "--- cleanup (date-scoped; restores tracked, removes new untracked) ---"
-echo "git restore --staged --worktree -- content/posts/$DATE-*.md content/news/$DATE.md content/usecase/$DATE.md data/published.csv 2>/dev/null; git clean -f -- content/posts/$DATE-*.md content/news/$DATE.md content/usecase/$DATE.md data/published.csv"
+echo "git restore --staged --worktree -- content/posts/$DATE-*.md content/news/$DATE.md content/usecase/$DATE.md content/ax/$DATE.md data/published.csv 2>/dev/null; git clean -f -- content/posts/$DATE-*.md content/news/$DATE.md content/usecase/$DATE.md content/ax/$DATE.md data/published.csv"

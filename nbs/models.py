@@ -46,7 +46,20 @@ def validate_selection(obj) -> list:
         if it.get("dedup") not in DEDUP_VALUES: errs.append(f"item[{i}] bad dedup")
         if it.get("dedup") == "followup" and not it.get("prior_post_path"):
             errs.append(f"item[{i}] followup requires prior_post_path")
-        if not isinstance(it.get("rank"), int): errs.append(f"item[{i}] rank not int")
+        # rank must be a real int, NOT a bool (isinstance(True, int) is True) — a bool rank would
+        # sort/serialize wrongly.
+        if not isinstance(it.get("rank"), int) or isinstance(it.get("rank"), bool):
+            errs.append(f"item[{i}] rank not int")
+        # type-guard the LLM string fields BEFORE downstream code hashes them (event_key in a set),
+        # urlsplits them (url), or .strip()s them (rationale/title). Otherwise `"event_key": []`,
+        # an object url, or an int rationale raises TypeError deeper in and aborts the whole day.
+        for f in ("event_key", "url"):
+            v = it.get(f)
+            if not isinstance(v, str) or not v.strip():
+                errs.append(f"item[{i}] {f} not a non-empty string")
+        for f in ("title", "source", "rationale"):
+            if not isinstance(it.get(f), str):
+                errs.append(f"item[{i}] {f} not a string")
     return errs
 
 def validate_against_candidates(obj, cand_canon_urls: set) -> list:

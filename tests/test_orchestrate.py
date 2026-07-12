@@ -142,10 +142,10 @@ def test_classify_push_failure_discriminates(tmp_path, monkeypatch):
     root=_init_repo(tmp_path, monkeypatch)
     orig = orchestrate._git
     def stub(stdout):
-        def g(args):
+        def g(args, **kw):
             if args[:2]==["ls-remote","origin"]:
                 return type("R",(),{"returncode":0,"stdout":stdout})()
-            return orig(args)
+            return orig(args, **kw)
         monkeypatch.setattr(orchestrate, "_git", g)
     A=_git_in(["rev-parse","HEAD"], root).stdout.strip()
     (root/"b").write_text("b"); _git_in(["add","-A"], root); _git_in(["commit","-qm","B"], root)

@@ -35,11 +35,21 @@ def run_claude(text, timeout=300):
     if r.returncode!=0: raise RuntimeError(f"claude -p failed: {r.stderr[:300]}")
     return r.stdout
 
+# hard ceiling on items that reach generation. The prompt has no count limit, so a pathological
+# (or huge-news-day) selection could stage dozens of items; at GEN_TIMEOUT=900s x retry / 4 workers
+# that occupies the pipeline for hours while holding both locks and can miss the whole day. Observed
+# real days are 9-12 posts, so 20 keeps ample headroom while bounding worst case. Truncate by rank.
+MAX_SELECTED = 20
+
 def recount(obj):
     items=obj.get("items",[])
     obj["skipped_count"]=sum(1 for it in items if it.get("dedup")=="skip")
-    obj["items"]=[it for it in items if it.get("dedup")!="skip"]
-    obj["items"].sort(key=lambda x:x.get("rank",999))
+    kept=[it for it in items if it.get("dedup")!="skip"]
+    kept.sort(key=lambda x:x.get("rank",999))
+    if len(kept) > MAX_SELECTED:
+        print(f"[select] capping {len(kept)} selected items to MAX_SELECTED={MAX_SELECTED} (by rank)")
+        kept=kept[:MAX_SELECTED]
+    obj["items"]=kept
     obj["selected_count"]=len(obj["items"])
 
 def select(date):

@@ -7,7 +7,10 @@ from . import email as _email
 _CHROME_PROFILE = _email.config_dir() / "chrome-profile"
 
 def _git(root, *args):
-    return subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True)
+    # schedule runs only LOCAL git ops (status/config) — they fail fast, never hang, so no timeout.
+    # GIT_TERMINAL_PROMPT=0 so a credential prompt fails fast. env per call (not import-snapshotted).
+    return subprocess.run(["git", *args], cwd=str(root), capture_output=True, text=True,
+                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
 
 def _git_credentials_present():
     return (Path.home() / ".git-credentials").exists()
@@ -254,7 +257,11 @@ def check_alert(date=None, *, is_published=None, sender=None, waiter=None):
         sender(date, _last_run_reason(date))
         _record_alert(date, "sent")           # record AFTER send succeeds
     except Exception as e:
+        # the missed-publish alert is the LAST line of defense; a swallowed send failure (token
+        # invalid / transient Gmail) must not look like a healthy check. Return nonzero so the
+        # ai-daily-alert unit is marked failed and the operator actually notices.
         _record_alert(date, f"error:{str(e)[:80]}")
+        return 1
     return 0
 
 if __name__ == "__main__":

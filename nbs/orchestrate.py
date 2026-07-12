@@ -23,11 +23,31 @@ def _lock():
     finally:
         f.close()   # closing the fd releases the flock
 
-def _git(args):
-    return subprocess.run(["git"] + args, cwd=str(ROOT), capture_output=True, text=True)
+# Only NETWORK git ops (push, ls-remote) can hang — a stalled peer/credential-helper would otherwise
+# block the run forever AFTER the commit, holding both locks. They pass an explicit timeout below
+# (=CRITICAL-3 guard). LOCAL ops get NO timeout: git fails fast on lock/disk, it never hangs, and a
+# synthetic timeout rc would be indistinguishable from a real "clean"/"absent" answer and silently
+# read as success by callers. GIT_TERMINAL_PROMPT=0 everywhere: a credential prompt fails fast
+# instead of hanging on stdin. A network timeout surfaces as rc=124, handled at the two call sites.
+_GIT_NET_TIMEOUT = 120
+
+def _git(args, timeout=None):
+    # env built PER CALL (not snapshotted at import) so runtime GIT_CONFIG_*/env overrides are honored.
+    try:
+        return subprocess.run(["git"] + args, cwd=str(ROOT), capture_output=True, text=True,
+                              timeout=timeout, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, returncode=124, stdout="", stderr="git timed out")
 
 def _head_has_news(date):
-    return _git(["cat-file", "-e", f"HEAD:content/news/{date}.md"]).returncode == 0
+    # tri-state: True = in HEAD, False = CONFIRMED absent, None = git error (caller fails closed).
+    # ls-tree (not cat-file): cat-file returns rc 128 for BOTH a missing path AND a corrupt repo, so
+    # a git error would masquerade as "not published" and drive a re-publish. ls-tree returns rc 0
+    # for present AND absent (differing only by stdout) and rc != 0 only on a genuine error.
+    r = _git(["ls-tree", "HEAD", "--", f"content/news/{date}.md"])
+    if r.returncode != 0:
+        return None
+    return bool(r.stdout.strip())
 
 def _publish_state(date):
     p = run_dir(date) / "publish.json"
@@ -43,7 +63,10 @@ def decide_action(date, *, force):
     # signal (survives runs/ scratch wipe). publish.json.pushed only optimizes skip vs re-push.
     if force:
         return "full"
-    if _head_has_news(date):
+    hn = _head_has_news(date)
+    if hn is None:                              # can't determine publish state (git error) -> abort,
+        return "error"                          # never guess: guessing "unpublished" re-publishes a live day
+    if hn:
         st = _publish_state(date)
         if st is None:                          # scratch wiped but news in HEAD → recover by re-push
             return "push_only"
@@ -56,9 +79,11 @@ STAGES = ["collect", "select", "stage", "publish"]
 _ARTIFACT = {"collect": "candidates.json", "select": "selection.json",
              "stage": "generation.json", "publish": "publish.json"}
 
-def _default_runner(name, date):
-    return subprocess.run(["python3", "-m", f"nbs.{name}", "--date", date],
-                          cwd=str(ROOT)).returncode
+def _default_runner(name, date, no_commit=False):
+    argv = ["python3", "-m", f"nbs.{name}", "--date", date]
+    if name == "publish" and no_commit:
+        argv.append("--no-commit")     # promote into content/ but DON'T commit (smoke-safe)
+    return subprocess.run(argv, cwd=str(ROOT)).returncode
 
 def _default_email_runner(date, run_id):
     try:
@@ -103,7 +128,7 @@ def _mark_pushed(date, sha):
 
 def _classify_push_failure(head):
     # classify a FAILED `git push` by querying the live remote (never parse git stderr).
-    ls = _git(["ls-remote", "origin", "refs/heads/main"])
+    ls = _git(["ls-remote", "origin", "refs/heads/main"], timeout=_GIT_NET_TIMEOUT)   # network: bound it
     if ls.returncode != 0 or not ls.stdout.strip():
         return "push_pending", None, "origin/main absent or ls-remote failed"
     remote_sha = ls.stdout.split()[0]
@@ -119,8 +144,8 @@ def _push(date):
     # push the ACTUAL published commit (HEAD) to remote main — NOT the local `main` branch,
     # which may be stale/unrelated on a non-main or detached checkout.
     head = _git(["rev-parse", "HEAD"]).stdout.strip()
-    if _git(["push", "origin", "HEAD:refs/heads/main"]).returncode != 0:
-        status, sha, reason = _classify_push_failure(head)
+    if _git(["push", "origin", "HEAD:refs/heads/main"], timeout=_GIT_NET_TIMEOUT).returncode != 0:
+        status, sha, reason = _classify_push_failure(head)   # rc=124 on timeout -> ls-remote decides
         if status == "published":                # remote already at HEAD → record it
             _mark_pushed(date, sha)
             return "published", sha, reason
@@ -149,8 +174,10 @@ def _write_run(date, payload):
         os.path.exists(tmp) and os.remove(tmp); raise
     return payload
 
-def run(date, *, force=False, no_push=False, runner=None, now=None, email_runner=None):
-    runner = runner or _default_runner
+def run(date, *, force=False, no_push=False, no_commit=False, runner=None, now=None, email_runner=None):
+    if no_commit:
+        no_push = True   # nothing committed -> a push would send an unchanged HEAD; skip it (smoke-safe)
+    runner = runner or (lambda n, d: _default_runner(n, d, no_commit=no_commit))
     email_runner = email_runner or _default_email_runner
     now = now or datetime.now(config.KST)
     run_id = now.strftime("%Y%m%dT%H%M%S%z")
@@ -177,7 +204,19 @@ def run(date, *, force=False, no_push=False, runner=None, now=None, email_runner
         return base
     try:
         with _lock():
+            if no_commit and _head_has_news(date) is not False:
+                # a no-commit PREVIEW must never overwrite the recovery manifest of an already-
+                # published date: publish would write publish.json{status:published, commit_sha:null}
+                # with no actual commit, so the next real run does push_only on the STALE HEAD and
+                # records the preview as deployed. Refuse on True (published) OR None (state
+                # unverifiable via git) — fail closed. No run/publish state is touched.
+                base["status"] = "skipped"
+                base["reason"] = "no-commit preview refused: date published or state unverifiable"
+                return base
             action = decide_action(date, force=force)
+            if action == "error":
+                # decide_action could not determine publish state (git error) -> abort, don't guess.
+                return finish("failed", "cannot determine publish state (git error)")
             if action == "skip":
                 return finish("skipped", "already published and pushed")
             if action == "push_only":
@@ -230,9 +269,10 @@ def main(argv=None):
     ap.add_argument("--date", default=None)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--no-push", action="store_true")
+    ap.add_argument("--no-commit", action="store_true")   # promote but don't commit/push (smoke)
     a = ap.parse_args(argv)
     date = a.date or _today()
-    m = run(date, force=a.force, no_push=a.no_push)
+    m = run(date, force=a.force, no_push=a.no_push, no_commit=a.no_commit)
     push = (m.get("stages", {}) or {}).get("push", {}).get("status", "-")
     print(f"[{m['status']}] {date} push={push} reason={m.get('reason','')}")
     return _STATUS_EXIT.get(m["status"], 1)
