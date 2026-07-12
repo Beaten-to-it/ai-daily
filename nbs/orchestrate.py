@@ -193,6 +193,14 @@ def run(date, *, force=False, no_push=False, no_commit=False, runner=None, now=N
         return base
     try:
         with _lock():
+            if no_commit and _head_has_news(date):
+                # a no-commit PREVIEW must never overwrite the recovery manifest of an already-
+                # published date: publish would write publish.json{status:published, commit_sha:null}
+                # with no actual commit, so the next real run does push_only on the STALE HEAD and
+                # records the preview as deployed. Refuse without touching any run/publish state.
+                base["status"] = "skipped"
+                base["reason"] = "no-commit preview refused: date already published in HEAD"
+                return base
             action = decide_action(date, force=force)
             if action == "skip":
                 return finish("skipped", "already published and pushed")

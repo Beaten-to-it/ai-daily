@@ -77,25 +77,39 @@ def _host_is_public(url):
     return True
 
 def _read_capped(reader):
-    # Read a file-like (urllib response) in chunks under a TOTAL deadline + byte cap. Each read()
-    # is still socket-timeout-bounded; the deadline bounds a steady drip that never times out.
+    # Read a file-like in chunks under a TOTAL deadline + byte cap. read1() (not read()) returns
+    # after ONE recv, so a slow-drip server that trickles bytes just under the socket timeout can't
+    # block us INSIDE a single fill-to-65536 read() where the deadline is never re-checked. That
+    # makes the deadline actually enforceable between reads. Falls back to read() if no read1.
+    read1 = getattr(reader, "read1", None) or reader.read
     deadline = time.monotonic() + FETCH_DEADLINE
     buf = bytearray()
     while len(buf) <= MAX_FETCH_BYTES and time.monotonic() < deadline:
-        chunk = reader.read(65536)
+        chunk = read1(65536)
         if not chunk:
             break
         buf += chunk
     return bytes(buf[:MAX_FETCH_BYTES])
+
+class _SSRFGuardedRedirect(urllib.request.HTTPRedirectHandler):
+    # §10: validate EVERY redirect hop BEFORE urllib connects to it. A public URL that 302s to an
+    # internal host must not be fetched at all — checking only the final URL is too late (the
+    # internal GET already happened, and a redirect back out to a public host would then pass the
+    # final check). Returning None suppresses the redirect (urllib returns the 3xx response as-is).
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _host_is_public(newurl):
+            return None
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+_SSRF_OPENER = urllib.request.build_opener(_SSRFGuardedRedirect)
 
 def _http_get(url, timeout=20):
     if not _host_is_public(url):          # §10: block internal/non-global destinations (SSRF)
         return "", False
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            # §10: a redirect can land off-web (urllib allows ftp:// redirect targets) or on an
-            # internal host; re-check the FINAL url's scheme AND that it resolves to a public IP.
+        with _SSRF_OPENER.open(req, timeout=timeout) as r:   # per-hop SSRF validation on redirects
+            # belt-and-suspenders: re-check the FINAL url (off-web scheme / non-global host).
             if urlsplit(r.geturl()).scheme not in ("http", "https") or not _host_is_public(r.geturl()):
                 return "", False
             return _read_capped(r).decode("utf-8", "replace"), True
@@ -114,10 +128,11 @@ def _curl_impersonate(url, timeout=30):
         return ""
     try:
         from curl_cffi import requests as creq
-        # stream=True + capped read so a hostile body can't OOM us (curl_cffi's timeout is total,
-        # so time is already bounded; this bounds memory).
-        with creq.get(url, impersonate="chrome", timeout=timeout, stream=True) as r:
-            # §10: libcurl follows redirects and supports file://; enforce the FINAL url is a public web host.
+        # allow_redirects=False so this tertiary fallback can't follow a public->internal redirect
+        # (per-hop SSRF); a 3xx then fails the status check below and we degrade. curl_cffi's timeout
+        # is TOTAL (libcurl), so time is already bounded; stream + capped read bounds memory.
+        with creq.get(url, impersonate="chrome", timeout=timeout, stream=True, allow_redirects=False) as r:
+            # §10: enforce the url is a public web host (scheme + non-global IP).
             if r.status_code != 200 or urlsplit(str(r.url)).scheme not in ("http", "https") \
                or not _host_is_public(str(r.url)):
                 return ""
@@ -248,12 +263,18 @@ _FETCHERS = {"article": lambda it: fetch_article(it["url"]),
 def fetch_item(item):
     st = item.get("source_type", "article")
     url = item.get("url", "")
-    # §10 trust boundary: only http(s). file://, ftp:// etc. would let a hostile feed
-    # URL read the local FS (urllib/libcurl/yt-dlp all honor them) into published
-    # evidence. Guard once at dispatch — covers every backend. (_jina fetches server-side.)
+    # §10 trust boundary at DISPATCH — covers EVERY backend (http, jina, curl, yt-dlp, twitter,
+    # opencli), not just the http fetchers: (a) only http(s) — file://, ftp:// would read the local
+    # FS; (b) the host must resolve to a public IP, else a video/sns candidate pointing at
+    # 127.0.0.1 / RFC1918 / link-local metadata would let yt-dlp or the CLIs probe internal
+    # services. (_jina fetches the target server-side, so ITS host is r.jina.ai — reached only after
+    # this guard passes the original url, which is correct: we never dispatch an internal url at all.)
     if urlsplit(url).scheme not in ("http", "https"):
         return FetchResult(event_key=item.get("event_key",""), url=url, source_type=st,
                            text="", evidence_level="exclude", via="bad-scheme", fetch_ok=False)
+    if not _host_is_public(url):                       # §10: internal/non-global host -> block (SSRF)
+        return FetchResult(event_key=item.get("event_key",""), url=url, source_type=st,
+                           text="", evidence_level="exclude", via="bad-host", fetch_ok=False)
     text, via, ok = _FETCHERS.get(st, _FETCHERS["article"])(item)
     level = classify_evidence(st, text, paywall_marker=_has_paywall(text), fetch_ok=ok)
     return FetchResult(event_key=item.get("event_key",""), url=url,

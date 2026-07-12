@@ -1,8 +1,8 @@
 """Regression tests for the 2026-07-12 Codex adversarial-review hardening pass.
 Each test pins one accepted fix so it can't silently regress."""
-import json, subprocess
+import json, subprocess, urllib.request
 import pytest
-from nbs import fetch, select, stage, orchestrate
+from nbs import fetch, select, stage, orchestrate, publish, models
 from nbs.models import FetchResult, GenerationResult
 
 
@@ -143,3 +143,99 @@ def test_no_commit_implies_no_push(tmp_path, monkeypatch):
     m = orchestrate.run("2026-07-12", no_commit=True, runner=runner)
     assert m["status"] == "published"
     assert m["stages"]["push"]["status"] == "skipped"
+
+
+# ============ round-2: fixes to the round-1 fixes ==========================
+
+# H-R2-2: SSRF guard hoisted to the fetch_item DISPATCH — covers yt-dlp/CLIs, not just http fetchers
+def test_fetch_item_blocks_internal_host_for_video():
+    r = fetch.fetch_item({"event_key": "k", "url": "http://127.0.0.1:8080/x", "source_type": "video"})
+    assert r.evidence_level == "exclude" and r.fetch_ok is False and r.via == "bad-host"
+
+def test_fetch_item_still_flags_bad_scheme():
+    r = fetch.fetch_item({"event_key": "k", "url": "file:///etc/passwd", "source_type": "article"})
+    assert r.via == "bad-scheme" and r.evidence_level == "exclude"
+
+
+# H-R2-1: each redirect hop is validated BEFORE connecting (internal target suppressed)
+def test_redirect_to_internal_is_suppressed():
+    h = fetch._SSRFGuardedRedirect()
+    # a 302 Location pointing at link-local metadata -> redirect_request returns None (blocked)
+    assert h.redirect_request(None, None, 302, "Found", {}, "http://169.254.169.254/latest") is None
+
+def test_redirect_to_public_is_allowed():
+    h = fetch._SSRFGuardedRedirect()
+    req = urllib.request.Request("http://8.8.8.8/a")
+    out = h.redirect_request(req, None, 302, "Found", {}, "http://8.8.8.8/b")
+    assert out is not None                       # public hop proceeds normally
+
+
+# H-R2-3: _read_capped uses read1 (returns per-recv) and honors the deadline + byte cap
+def test_read_capped_uses_read1_and_caps(monkeypatch):
+    monkeypatch.setattr(fetch, "MAX_FETCH_BYTES", 100)
+    class _R:
+        def __init__(self): self.n = 0
+        def read1(self, n): self.n += 1; return b"y" * 80
+        def read(self, n): raise AssertionError("must use read1, not read (drip-safe)")
+    r = _R()
+    assert len(fetch._read_capped(r)) == 100 and r.n >= 2
+
+def test_read_capped_stops_at_deadline(monkeypatch):
+    monkeypatch.setattr(fetch, "FETCH_DEADLINE", -1.0)   # already past -> no read at all
+    class _R:
+        def read1(self, n): raise AssertionError("deadline must prevent any read")
+    assert fetch._read_capped(_R()) == b""
+
+
+# H-R2-4: git timeout must fail CLOSED, never read as "clean" or "untracked"
+def test_preflight_clean_fails_closed_on_git_error(monkeypatch):
+    monkeypatch.setattr(publish, "_git", lambda a, **k: subprocess.CompletedProcess(a, 124, "", "t/o"))
+    out = publish.preflight_clean(["content/news/x.md"])
+    assert out and "git status failed" in out[0]        # non-empty -> publish.run aborts (no promote)
+
+def test_rollback_keeps_file_on_git_timeout(tmp_path, monkeypatch):
+    monkeypatch.setattr(publish, "ROOT", tmp_path)
+    f = tmp_path / "content" / "posts" / "x.md"; f.parent.mkdir(parents=True); f.write_text("keep")
+    def fake_git(args, **k):
+        if args[0] == "cat-file": return subprocess.CompletedProcess(args, 124, "", "t/o")  # timeout
+        return subprocess.CompletedProcess(args, 0, "", "")
+    monkeypatch.setattr(publish, "_git", fake_git)
+    publish.rollback(["content/posts/x.md"])
+    assert f.exists()                                    # 124 -> NOT unlinked (fail closed)
+
+def test_rollback_removes_untracked_on_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(publish, "ROOT", tmp_path)
+    f = tmp_path / "content" / "posts" / "x.md"; f.parent.mkdir(parents=True); f.write_text("new")
+    def fake_git(args, **k):
+        if args[0] == "cat-file": return subprocess.CompletedProcess(args, 128, "", "absent")  # real absent
+        return subprocess.CompletedProcess(args, 0, "", "")
+    monkeypatch.setattr(publish, "_git", fake_git)
+    publish.rollback(["content/posts/x.md"])
+    assert not f.exists()                                # rc 128 (absent) -> removed
+
+
+# MEDIUM-R2-1: validate_selection type-guards LLM fields so a malformed one is a clean reject
+def _sel_item(**over):
+    it = {"event_key": "k", "title": "t", "url": "https://x/1", "source": "S", "source_type": "article",
+          "evidence_type": "article", "dedup": "new", "prior_post_path": None, "rank": 1, "rationale": "r"}
+    it.update(over); return it
+
+def test_validate_selection_rejects_type_crashers():
+    base = {"date": "d", "selected_count": 0, "skipped_count": 0, "generated_with": "t"}
+    assert models.validate_selection({**base, "items": [_sel_item()]}) == []          # valid baseline
+    for over, field in [({"event_key": []}, "event_key"), ({"event_key": None}, "event_key"),
+                        ({"url": {"a": 1}}, "url"), ({"rationale": 5}, "rationale"),
+                        ({"rank": True}, "rank")]:                                     # bool != int
+        errs = models.validate_selection({**base, "items": [_sel_item(**over)]})
+        assert any(field in e for e in errs), (over, errs)
+
+
+# MEDIUM-R2-2: a no-commit preview is refused when the date is already published in HEAD
+def test_no_commit_refused_when_date_in_head(tmp_path, monkeypatch):
+    import nbs.config as cfg
+    monkeypatch.setattr(cfg, "ROOT", tmp_path)
+    monkeypatch.setattr(orchestrate, "ROOT", tmp_path)
+    monkeypatch.setattr(orchestrate, "_head_has_news", lambda date: True)
+    def runner(name, date): raise AssertionError("must refuse BEFORE running any stage")
+    m = orchestrate.run("2026-07-12", no_commit=True, runner=runner)
+    assert m["status"] == "skipped" and "already published" in m["reason"]

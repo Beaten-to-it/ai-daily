@@ -115,8 +115,10 @@ def date_writeset(gen):
                             f"content/ax/{date}.md", "data/published.csv"]
 
 def preflight_clean(paths):
-    out = _git(["status", "--porcelain", "--"] + paths).stdout
-    return [ln[3:].strip() for ln in out.splitlines() if ln[3:].strip()]
+    r = _git(["status", "--porcelain", "--"] + paths)
+    if r.returncode != 0:            # fail CLOSED: a git error/timeout (rc=124) must NOT read as
+        return [f"git status failed (rc={r.returncode})"]   # "clean" -> publish.run aborts, no promote
+    return [ln[3:].strip() for ln in r.stdout.splitlines() if ln[3:].strip()]
 
 def promote(gen, staging):
     date = gen["date"]; touched = []
@@ -146,12 +148,18 @@ def promote(gen, staging):
 
 def rollback(paths):
     for rel in paths:
-        if _head_has(rel):
+        # branch on the cat-file rc: 0 = in HEAD; a real "absent" answer is rc 1 OR 128 (git returns
+        # 128 for a path missing from HEAD's tree); 124 is OUR synthetic timeout marker (_git). A
+        # timeout must NOT be read as "absent" and unlink a possibly-TRACKED file (data loss) — fail
+        # CLOSED on 124 by unstaging only and leaving the worktree file in place.
+        r = _git(["cat-file", "-e", f"HEAD:{rel}"])
+        if r.returncode == 0:                              # tracked in HEAD -> restore
             _git(["restore", "--staged", "--worktree", "--source=HEAD", "--", rel])
         else:
-            _git(["reset", "-q", "--", rel])          # unstage if staged (no-op otherwise)
-            p = ROOT / rel
-            if p.exists(): p.unlink()
+            _git(["reset", "-q", "--", rel])               # always unstage (no-op if not staged)
+            if r.returncode != 124:                        # real git "absent" (1/128) -> remove untracked
+                p = ROOT / rel
+                if p.exists(): p.unlink()                  # (124 = timeout -> keep the file, fail closed)
 
 def _hugo_build(outdir):
     # no pipe: exit code must survive. Uses hugo.toml baseURL (=/ai-daily/).
