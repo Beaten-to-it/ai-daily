@@ -33,14 +33,25 @@ def test_read_capped_enforces_byte_ceiling(monkeypatch):
     assert len(fetch._read_capped(_Reader())) == 100
 
 
-# --- H4: selection count is hard-capped before generation --------------------
+# --- H4: meaningful selections are not hard-capped ---------------------------
 
-def test_recount_caps_to_max_selected():
-    n = select.MAX_SELECTED + 7
-    obj = {"items": [{"event_key": f"k{i}", "dedup": "new", "rank": i} for i in range(n)]}
-    select.recount(obj)
-    assert obj["selected_count"] == select.MAX_SELECTED
-    assert [it["rank"] for it in obj["items"]] == list(range(select.MAX_SELECTED))  # kept top ranks
+def test_selection_keeps_more_than_thirty_meaningful_items():
+    candidates = [{
+        "candidate_id": f"{index:020x}", "source": "S", "source_type": "article",
+        "title": f"T{index}", "url": f"https://x/{index}",
+        "canonical_url": f"https://x/{index}", "published_at": None,
+        "snippet": "s", "raw_id": str(index), "lane": "official", "discovered_via": "feed",
+    } for index in range(31)]
+    decisions = [{
+        "candidate_id": candidate["candidate_id"], "decision": "select", "dedup": "new",
+        "prior_post_path": None, "rank": index + 1, "reason_code": "selected", "rationale": "r",
+    } for index, candidate in enumerate(candidates)]
+    result = select.materialize_selection(
+        {"date": "2026-08-01", "decisions": decisions, "generated_with": "codex-exec"},
+        candidates,
+        "2026-08-01",
+    )
+    assert result["selected_count"] == 31 and len(result["items"]) == 31
 
 
 # --- H3: a null event_key isolates ONE item, never crashes the stage ---------
@@ -71,7 +82,7 @@ def test_null_event_key_isolated_not_crashing(tmp_path, monkeypatch):
                 event_key=ek, title=it["title"], url=it["url"], source="S", source_type="article",
                 evidence_level=fr.evidence_level,
                 status="excluded" if fr.evidence_level == "exclude" else "ok",
-                post_path=None if fr.evidence_level == "exclude" else f"posts/{date}-{ek}.md",
+                    post_path=None if fr.evidence_level == "exclude" else f"articles/{date}-{ek}.md",
                 slug=f"{date}-{ek}", rank=it["rank"], rationale="r"))
         return out
 
@@ -79,7 +90,7 @@ def test_null_event_key_isolated_not_crashing(tmp_path, monkeypatch):
         return FetchResult(item["event_key"], item["url"], "article", "t" * 50, "confirmed", "http", True)
 
     out = stage.run(date, fetch=_fetch, generate=_gen,
-                    usecase=lambda *a, **k: None, ax=lambda *a, **k: None)   # no crash
+                    guide=lambda *a, **k: None, executive=lambda *a, **k: None)   # no crash
     assert out["status"] == "ok"
     assert captured["fmap"][None].evidence_level == "exclude"
     assert captured["fmap"][None].via == "invalid-key"
@@ -112,7 +123,10 @@ def test_push_and_ls_remote_carry_network_timeout(monkeypatch):
     class _R:
         returncode = 1; stdout = ""; stderr = ""
     def cap(cmd, **k):
-        seen[cmd[1]] = k.get("timeout"); return _R()      # cmd[1] = the git subcommand
+        seen[cmd[1]] = k.get("timeout")                  # cmd[1] = the git subcommand
+        if cmd[1] == "symbolic-ref":
+            return type("R", (), {"returncode": 0, "stdout": "main\n", "stderr": ""})()
+        return _R()
     monkeypatch.setattr(orchestrate.subprocess, "run", cap)
     orchestrate._classify_push_failure("deadbeef")        # calls ls-remote
     assert seen["ls-remote"] == orchestrate._GIT_NET_TIMEOUT
@@ -139,8 +153,9 @@ def test_no_commit_implies_no_push(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestrate, "ROOT", tmp_path)
     monkeypatch.setattr(orchestrate, "_default_email_runner",
                         lambda date, run_id: (0, {"status": "not_published"}))
-    monkeypatch.setattr(orchestrate, "_head_has_news", lambda date: False)   # unpublished -> guard passes
+    monkeypatch.setattr(orchestrate, "_head_has_daily", lambda date: False)   # unpublished -> guard passes
     monkeypatch.setattr(orchestrate, "decide_action", lambda date, *, force: "full")
+    monkeypatch.setattr(orchestrate, "_prepare_checkpoint", lambda date, validated_at: (True, "", {}))
     def _pushed(date): raise AssertionError("_push must not run under no_commit")
     monkeypatch.setattr(orchestrate, "_push", _pushed)
     # runner: every stage 'succeeds' and writes the artifact orchestrate checks
@@ -204,43 +219,45 @@ def test_read_capped_stops_at_deadline(monkeypatch):
 # H-R2-4: git timeout must fail CLOSED, never read as "clean" or "untracked"
 def test_preflight_clean_fails_closed_on_git_error(monkeypatch):
     monkeypatch.setattr(publish, "_git", lambda a, **k: subprocess.CompletedProcess(a, 124, "", "t/o"))
-    out = publish.preflight_clean(["content/news/x.md"])
+    out = publish.preflight_clean(["content/daily/x.md"])
     assert out and "git status failed" in out[0]        # non-empty -> publish.run aborts (no promote)
 
 def test_rollback_keeps_file_on_git_timeout(tmp_path, monkeypatch):
     monkeypatch.setattr(publish, "ROOT", tmp_path)
-    f = tmp_path / "content" / "posts" / "x.md"; f.parent.mkdir(parents=True); f.write_text("keep")
+    f = tmp_path / "content" / "articles" / "x.md"; f.parent.mkdir(parents=True); f.write_text("keep")
     def fake_git(args, **k):
         if args[0] == "ls-tree": return subprocess.CompletedProcess(args, 124, "", "t/o")  # timeout/error
         return subprocess.CompletedProcess(args, 0, "", "")
     monkeypatch.setattr(publish, "_git", fake_git)
-    publish.rollback(["content/posts/x.md"])
+    publish.rollback(["content/articles/x.md"])
     assert f.exists()                                    # git error -> NOT unlinked (fail closed)
 
 def test_rollback_removes_untracked_on_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(publish, "ROOT", tmp_path)
-    f = tmp_path / "content" / "posts" / "x.md"; f.parent.mkdir(parents=True); f.write_text("new")
+    f = tmp_path / "content" / "articles" / "x.md"; f.parent.mkdir(parents=True); f.write_text("new")
     def fake_git(args, **k):
         if args[0] == "ls-tree": return subprocess.CompletedProcess(args, 0, "", "")  # rc0 + EMPTY = absent
         return subprocess.CompletedProcess(args, 0, "", "")
     monkeypatch.setattr(publish, "_git", fake_git)
-    publish.rollback(["content/posts/x.md"])
+    publish.rollback(["content/articles/x.md"])
     assert not f.exists()                                # confirmed absent (rc0, empty) -> removed
 
 
-# MEDIUM-R2-1: validate_selection type-guards LLM fields so a malformed one is a clean reject
-def _sel_item(**over):
-    it = {"event_key": "k", "title": "t", "url": "https://x/1", "source": "S", "source_type": "article",
-          "evidence_type": "article", "dedup": "new", "prior_post_path": None, "rank": 1, "rationale": "r"}
+# MEDIUM-R2-1: decision validation type-guards model fields before local materialization
+def _decision_item(**over):
+    it = {"candidate_id": "0123456789abcdef0123", "decision": "select", "dedup": "new",
+          "prior_post_path": None, "rank": 1, "reason_code": "selected", "rationale": "r"}
     it.update(over); return it
 
-def test_validate_selection_rejects_type_crashers():
-    base = {"date": "d", "selected_count": 0, "skipped_count": 0, "generated_with": "t"}
-    assert models.validate_selection({**base, "items": [_sel_item()]}) == []          # valid baseline
-    for over, field in [({"event_key": []}, "event_key"), ({"event_key": None}, "event_key"),
-                        ({"url": {"a": 1}}, "url"), ({"rationale": 5}, "rationale"),
-                        ({"rank": True}, "rank")]:                                     # bool != int
-        errs = models.validate_selection({**base, "items": [_sel_item(**over)]})
+def test_validate_decisions_rejects_type_crashers():
+    base = {"date": "d", "generated_with": "codex-exec"}
+    assert models.validate_decisions({**base, "decisions": [_decision_item()]}) == []
+    for over, field in [({"candidate_id": []}, "candidate_id"),
+                        ({"candidate_id": None}, "candidate_id"),
+                        ({"decision": {"a": 1}}, "decision"),
+                        ({"rationale": 5}, "rationale"),
+                        ({"rank": True}, "rank")]:
+        errs = models.validate_decisions({**base, "decisions": [_decision_item(**over)]})
         assert any(field in e for e in errs), (over, errs)
 
 
@@ -249,7 +266,7 @@ def test_no_commit_refused_when_date_in_head(tmp_path, monkeypatch):
     import nbs.config as cfg
     monkeypatch.setattr(cfg, "ROOT", tmp_path)
     monkeypatch.setattr(orchestrate, "ROOT", tmp_path)
-    monkeypatch.setattr(orchestrate, "_head_has_news", lambda date: True)
+    monkeypatch.setattr(orchestrate, "_head_has_daily", lambda date: True)
     def runner(name, date): raise AssertionError("must refuse BEFORE running any stage")
     m = orchestrate.run("2026-07-12", no_commit=True, runner=runner)
     assert m["status"] == "skipped" and "refused" in m["reason"]
@@ -259,20 +276,20 @@ def test_no_commit_refused_when_date_in_head(tmp_path, monkeypatch):
 
 from nbs import generate
 
-# H-R3-3: _head_has_news is tri-state; a git error -> None so decide_action aborts (not re-publish)
-def test_head_has_news_tristate(monkeypatch):
+# H-R3-3: _head_has_daily is tri-state; a git error -> None so decide_action aborts (not re-publish)
+def test_head_has_daily_tristate(monkeypatch):
     mode = {"v": "present"}
     def g(args, **k):
-        return {"present": subprocess.CompletedProcess(args, 0, "100644 blob ab\tcontent/news/x.md\n", ""),
+        return {"present": subprocess.CompletedProcess(args, 0, "100644 blob ab\tcontent/daily/x.md\n", ""),
                 "absent":  subprocess.CompletedProcess(args, 0, "", ""),
                 "error":   subprocess.CompletedProcess(args, 128, "", "fatal")}[mode["v"]]
     monkeypatch.setattr(orchestrate, "_git", g)
-    mode["v"] = "present"; assert orchestrate._head_has_news("2026-07-12") is True
-    mode["v"] = "absent";  assert orchestrate._head_has_news("2026-07-12") is False
-    mode["v"] = "error";   assert orchestrate._head_has_news("2026-07-12") is None
+    mode["v"] = "present"; assert orchestrate._head_has_daily("2026-07-12") is True
+    mode["v"] = "absent";  assert orchestrate._head_has_daily("2026-07-12") is False
+    mode["v"] = "error";   assert orchestrate._head_has_daily("2026-07-12") is None
 
 def test_decide_action_aborts_on_head_error(monkeypatch):
-    monkeypatch.setattr(orchestrate, "_head_has_news", lambda d: None)
+    monkeypatch.setattr(orchestrate, "_head_has_daily", lambda d: None)
     assert orchestrate.decide_action("2026-07-12", force=False) == "error"    # can't tell -> abort
     assert orchestrate.decide_action("2026-07-12", force=True) == "full"      # force bypasses
 
@@ -309,22 +326,18 @@ def test_stage_skips_unhashable_event_key(tmp_path, monkeypatch):
         captured["keys"] = list(fmap.keys())
         return [GenerationResult(event_key="good", title="t", url=it["url"], source="S",
                 source_type="article", evidence_level="confirmed", status="ok",
-                post_path=f"posts/{date}-good.md", slug=f"{date}-good", rank=it["rank"], rationale="r")
+                    post_path=f"articles/{date}-good.md", slug=f"{date}-good", rank=it["rank"], rationale="r")
                 for it in items if generate._mapped(it.get("event_key"), fmap)]
     def _fetch(item):
         return FetchResult(item["event_key"], item["url"], "article", "t" * 50, "confirmed", "http", True)
-    out = stage.run(date, fetch=_fetch, generate=_gen, usecase=lambda *a, **k: None, ax=lambda *a, **k: None)
+    out = stage.run(date, fetch=_fetch, generate=_gen, guide=lambda *a, **k: None, executive=lambda *a, **k: None)
     assert out["status"] == "ok"                          # no crash on unhashable []
     assert captured["keys"] == ["good"]                   # the [] key was skipped, not mapped
 
 
-# LOW-R4: fetch_sns matches HOST, not substring (notx.com/max.com must NOT route to the twitter CLI)
+# LOW-R4: fetch_sns matches HOST, not substring (notx.com/max.com is not social evidence)
 def test_fetch_sns_host_match_not_substring(monkeypatch):
-    called = {"twitter": 0}
-    def fake_run(argv, **k):
-        if argv and argv[0] == "twitter": called["twitter"] += 1
-        raise AssertionError("no CLI should run for a non-platform host")
-    monkeypatch.setattr(fetch.subprocess, "run", fake_run)
-    # notx.com contains the substring "x.com" but is NOT x.com -> must be rejected, twitter not called
+    monkeypatch.setattr(fetch, "fetch_article", lambda url: (_ for _ in ()).throw(
+        AssertionError("non-platform host must not be fetched")))
     r = fetch.fetch_sns({"url": "https://notx.com/status/123"})
-    assert r == ("", "sns-bad-host", False) and called["twitter"] == 0
+    assert r == ("", "sns-bad-host", False)

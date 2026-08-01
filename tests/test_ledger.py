@@ -9,7 +9,9 @@ def test_roundtrip_and_recent(tmp_path):
     ledger.append_rows(rows, path=p)
     recent = ledger.read_recent(days=7, today="2026-07-01", path=p)
     assert {r["event_key"] for r in recent} == {"b"}
-    assert ledger.ledger_digest(recent)[0].keys() >= {"event_key","title","summary","date","post_path"}
+    assert ledger.ledger_digest(recent)[0].keys() >= {
+        "canonical_key", "event_key", "title", "url", "source", "summary", "date", "post_path"
+    }
 def test_append_creates_header(tmp_path):
     p = tmp_path/"led.csv"; ledger.append_rows([], path=p)
     assert p.read_text().strip().split("\n")[0] == ",".join(ledger.LEDGER_HEADER)

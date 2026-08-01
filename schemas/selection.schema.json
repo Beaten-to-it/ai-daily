@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "date": {"type": "string"},
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "candidate_id": {"type": "string", "pattern": "^[0-9a-f]{20}$"},
+          "decision": {"type": "string", "enum": ["select", "skip"]},
+          "dedup": {"type": "string", "enum": ["new", "followup", "skip"]},
+          "prior_post_path": {"type": ["string", "null"]},
+          "rank": {"type": "integer", "minimum": 1},
+          "reason_code": {
+            "type": "string",
+            "enum": ["selected", "duplicate", "stale", "weak_evidence", "low_significance", "off_topic"]
+          },
+          "rationale": {"type": "string"}
+        },
+        "required": ["candidate_id", "decision", "dedup", "prior_post_path", "rank", "reason_code", "rationale"],
+        "additionalProperties": false
+      }
+    },
+    "generated_with": {"type": "string", "enum": ["codex-exec"]}
+  },
+  "required": ["date", "decisions", "generated_with"],
+  "additionalProperties": false
+}

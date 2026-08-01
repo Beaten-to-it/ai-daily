@@ -1,50 +1,130 @@
+import json
+
+import pytest
+
 from nbs import select
+from nbs.models import Candidate
 
-def test_run_claude_disables_tools_and_uses_stdin(monkeypatch):
-    # §10: select processes untrusted RSS/X/Reddit candidate text via claude -p; it needs
-    # text->JSON generation only, no tool access. --tools "" is the empirically-verified
-    # no-tool flag (task-4-report.md Step 0; --allowedTools "" does NOT restrict).
+
+def test_main_rejects_invalid_date_before_creating_run_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(select, "run_dir", lambda date: tmp_path / date)
+    with pytest.raises(SystemExit):
+        select.main(["--date", "../evil"])
+    assert not (tmp_path.parent / "evil").exists()
+
+
+def _candidate(index):
+    return Candidate(
+        source="OpenAI",
+        source_type="article",
+        title=f"Title {index}",
+        url=f"https://example.com/{index}",
+        canonical_url=f"https://example.com/{index}",
+        published_at=None,
+        snippet="snippet",
+        raw_id=str(index),
+        lane="official",
+        discovered_via="feed",
+    ).to_dict()
+
+
+def _decision(candidate, rank=1):
+    return {
+        "candidate_id": candidate["candidate_id"],
+        "decision": "select",
+        "dedup": "new",
+        "prior_post_path": None,
+        "rank": rank,
+        "reason_code": "selected",
+        "rationale": "important",
+    }
+
+
+def test_parse_strips_fences_for_archived_responses():
+    raw = '설명\n```json\n{"date":"2026-07-01","decisions":[],"generated_with":"codex-exec"}\n```\n끝'
+    assert select.parse_selection(raw)["date"] == "2026-07-01"
+
+
+def test_build_input_has_ledger_candidates_and_candidate_id():
+    candidate = _candidate(1)
+    text = select.build_prompt_input(
+        [candidate],
+        [{"event_key": "old", "title": "O", "summary": "s",
+          "date": "2026-06-30", "post_path": "posts/old"}],
+        "2026-07-01",
+    )
+    assert "OpenAI" in text and "old" in text and candidate["candidate_id"] in text
+    assert "```" not in text
+
+
+def test_run_codex_uses_selection_schema_and_isolated_workdir(monkeypatch, tmp_path):
     seen = {}
-    class R: returncode = 0; stdout = "ok"; stderr = ""
-    def fake_run(cmd, **kw):
-        seen["cmd"] = cmd; seen["input"] = kw.get("input"); seen["timeout"] = kw.get("timeout")
-        return R()
-    monkeypatch.setattr(select.subprocess, "run", fake_run)
-    out = select.run_claude("hello", timeout=7)
-    assert out == "ok" and "--tools" in seen["cmd"]
-    # regression: the --tools VALUE must be a non-empty dummy (== select.NOTOOLS). An EMPTY
-    # `--tools ""` deadlocks claude on a large stdin prompt (2026-07-04 P0). NOTOOLS still yields
-    # tools: [] (zero tools, §10) — verified live — so security is unchanged.
-    ti = seen["cmd"].index("--tools")
-    assert seen["cmd"][ti + 1] == select.NOTOOLS and seen["cmd"][ti + 1] != ""
-    # regression: effort PINNED to low. Without it, claude -p inherits settings.json effortLevel
-    # (xhigh) and the dedup task thinks past the timeout (2026-07-04 P0).
-    assert seen["cmd"].count("--effort") == 1   # exactly one; a later dup could override the value
-    ei = seen["cmd"].index("--effort")
-    assert seen["cmd"][ei + 1] == "low"
-    assert seen["input"] == "hello" and seen["timeout"] == 7
+    expected = {"date": "2026-07-01", "decisions": [], "generated_with": "codex-exec"}
+    def fake_run_json(prompt, schema, work_dir, timeout):
+        seen.update(prompt=prompt, schema=schema, work_dir=work_dir, timeout=timeout)
+        return expected
+    monkeypatch.setattr(select, "run_dir", lambda date: tmp_path / date)
+    monkeypatch.setattr(select.codex_cli, "run_json", fake_run_json)
 
-def test_run_claude_default_timeout_is_300(monkeypatch):
-    seen = {}
-    class R: returncode = 0; stdout = "ok"; stderr = ""
-    def fake_run(cmd, **kw):
-        seen["timeout"] = kw.get("timeout"); return R()
-    monkeypatch.setattr(select.subprocess, "run", fake_run)
-    select.run_claude("hello")
-    assert seen["timeout"] == 300
+    assert select.run_codex("hello", "2026-07-01", timeout=7) == expected
+    assert seen["prompt"] == "hello" and seen["timeout"] == 7
+    assert seen["schema"].name == "selection.schema.json"
+    assert seen["work_dir"] == tmp_path / "2026-07-01" / "codex-work" / "selection"
 
-def test_parse_strips_fences():
-    raw='설명\n```json\n{"date":"2026-07-01","items":[],"selected_count":0,"skipped_count":0,"generated_with":"claude-p"}\n```\n끝'
-    assert select.parse_selection(raw)["date"]=="2026-07-01"
-def test_recount_local():
-    obj={"items":[{"dedup":"new"},{"dedup":"followup"},{"dedup":"skip"}],
-         "selected_count":99,"skipped_count":99}
-    select.recount(obj)
-    assert obj["selected_count"]==2 and obj["skipped_count"]==1
-def test_build_input_has_ledger_and_candidates():
-    txt=select.build_prompt_input(
-        [{"source":"OpenAI","title":"T","url":"u","canonical_url":"u","snippet":"s",
-          "source_type":"article","published_at":None,"raw_id":"r"}],
-        [{"event_key":"old","title":"O","summary":"s","date":"2026-06-30","post_path":"posts/old"}],
-        "2026-07-01")
-    assert "OpenAI" in txt and "old" in txt and "2026-07-01" in txt
+
+def test_materialize_selection_does_not_cap_31_items():
+    candidates = [_candidate(index) for index in range(31)]
+    model = {"date": "2026-08-01",
+             "decisions": [_decision(candidate, rank=index + 1)
+                           for index, candidate in enumerate(candidates)],
+             "generated_with": "codex-exec"}
+    result = select.materialize_selection(model, candidates, "2026-08-01")
+    assert result["selected_count"] == 31
+    assert len(result["items"]) == 31
+
+
+def test_normalize_candidate_rejects_tampered_candidate_id():
+    import pytest
+    candidate = _candidate(1)
+    candidate["candidate_id"] = "0" * 20
+    with pytest.raises(ValueError, match="candidate_id mismatch"):
+        select.normalize_candidate(candidate)
+
+
+def test_select_rejects_missing_decision_before_writing_selection(tmp_path, monkeypatch):
+    date = "2026-08-01"
+    directory = tmp_path / date
+    directory.mkdir(parents=True)
+    candidates = [_candidate(1), _candidate(2)]
+    (directory / "candidates.json").write_text(json.dumps(candidates), encoding="utf-8")
+    model = {"date": date, "decisions": [_decision(candidates[0])],
+             "generated_with": "codex-exec"}
+    monkeypatch.setattr(select, "run_dir", lambda value: directory)
+    monkeypatch.setattr(select, "run_codex", lambda prompt, value: model)
+    monkeypatch.setattr(select.ledger_mod, "read_recent", lambda **kwargs: [])
+
+    import pytest
+    with pytest.raises(ValueError, match="missing decision"):
+        select.select(date)
+    assert not (directory / "selection.json").exists()
+
+
+def test_select_materializes_immutable_candidate_fields(tmp_path, monkeypatch):
+    date = "2026-08-01"
+    directory = tmp_path / date
+    directory.mkdir(parents=True)
+    candidate = _candidate(1)
+    (directory / "candidates.json").write_text(json.dumps([candidate]), encoding="utf-8")
+    decision = _decision(candidate)
+    model = {"date": date, "decisions": [decision], "generated_with": "codex-exec"}
+    monkeypatch.setattr(select, "run_dir", lambda value: directory)
+    monkeypatch.setattr(select, "run_codex", lambda prompt, value: model)
+    monkeypatch.setattr(select.ledger_mod, "read_recent", lambda **kwargs: [])
+
+    result = select.select(date)
+    item = result["items"][0]
+    assert item["title"] == candidate["title"]
+    assert item["snippet"] == candidate["snippet"]
+    assert item["url"] == candidate["url"]
+    assert item["source"] == candidate["source"]
+    assert result["decisions"] == [decision]

@@ -42,6 +42,7 @@ def read_recent(days, today, path=None):
             except (ValueError, KeyError): continue
     return out
 def ledger_digest(rows):
-    return [{"event_key":r.get("event_key",""),"title":r.get("title",""),
+    return [{"canonical_key":r.get("canonical_key",""),"event_key":r.get("event_key",""),
+             "title":r.get("title",""),"url":r.get("url",""),"source":r.get("source",""),
              "summary":r.get("summary",""),"date":r.get("date",""),
              "post_path":r.get("post_path","")} for r in rows]

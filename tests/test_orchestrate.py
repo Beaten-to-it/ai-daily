@@ -19,6 +19,7 @@ def test_lock_is_exclusive(tmp_path, monkeypatch):
         pass
 
 import subprocess, json
+import sys
 from pathlib import Path
 
 def _git_in(args, cwd): return subprocess.run(["git"]+args, cwd=str(cwd), capture_output=True, text=True)
@@ -30,24 +31,36 @@ def _init_repo(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ROOT", root)
     monkeypatch.setattr(orchestrate, "ROOT", root)
     monkeypatch.setattr(orchestrate, "run_dir", lambda d: root/"runs"/d)
+    monkeypatch.setattr(orchestrate.publish_mod, "build_verify",
+                        lambda gen, content_dir=None: [])
     _git_in(["init","-q"], root); _git_in(["config","user.email","t@t"], root); _git_in(["config","user.name","t"], root)
-    (root/"content"/"news").mkdir(parents=True)
+    (root/"content"/"daily").mkdir(parents=True)
     (root/".gitignore").write_text("runs/\n.orchestrate.lock\n", encoding="utf-8")
     _git_in(["add","-A"], root); _git_in(["commit","-qm","init"], root)
     return root
 
 def _publish_news(root, date, pushed=None):
-    (root/"content"/"news").mkdir(parents=True, exist_ok=True)
-    (root/"content"/"news"/f"{date}.md").write_text("x\n", encoding="utf-8")
+    (root/"content"/"daily").mkdir(parents=True, exist_ok=True)
+    (root/"content"/"daily"/f"{date}.md").write_text("x\n", encoding="utf-8")
     _git_in(["add","-A"], root); _git_in(["commit","-qm",f"publish {date}"], root)
     d = root/"runs"/date; d.mkdir(parents=True, exist_ok=True)
-    pj = {"date": date, "status": "published"}
+    pj = {"date": date, "status": "published",
+          "commit_sha": _git_in(["rev-parse", "HEAD"], root).stdout.strip()}
     if pushed is not None: pj["pushed"] = pushed
     (d/"publish.json").write_text(json.dumps(pj), encoding="utf-8")
 
 def test_decide_action_full_when_never_published(tmp_path, monkeypatch):
     root=_init_repo(tmp_path, monkeypatch)
     assert orchestrate.decide_action("2026-07-01", force=False) == "full"
+
+def test_head_has_daily_uses_new_route(monkeypatch):
+    seen = {}
+    def fake_git(args, timeout=None):
+        seen["args"] = args
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+    monkeypatch.setattr(orchestrate, "_git", fake_git)
+    assert orchestrate._head_has_daily("2026-08-01") is False
+    assert seen["args"][-1] == "content/daily/2026-08-01.md"
 
 def test_decide_action_skip_when_pushed(tmp_path, monkeypatch):
     root=_init_repo(tmp_path, monkeypatch); _publish_news(root, "2026-07-01", pushed=True)
@@ -99,7 +112,7 @@ def test_default_runner_shape(monkeypatch):
         return R()
     monkeypatch.setattr(orchestrate.subprocess, "run", fake_run)
     rc = orchestrate._default_runner("collect", "2026-07-01")
-    assert rc==0 and calls["argv"]==["python3","-m","nbs.collect","--date","2026-07-01"]
+    assert rc==0 and calls["argv"]==[sys.executable,"-m","nbs.collect","--date","2026-07-01"]
 
 import os
 
@@ -161,7 +174,7 @@ def _fixed_now(): return datetime(2026,7,1,9,0,0, tzinfo=config.KST)
 
 def _fake_runner_factory(root, *, outcomes):
     # outcomes: dict stage-> ("ok"|"rc1"|"held"|"empty"). Writes the artifact a real stage would,
-    # and for a successful publish, commits content/news/<date>.md so head_has_news becomes true.
+    # and for a successful publish, commits content/daily/<date>.md so head_has_news becomes true.
     def runner(name, date):
         d = root/"runs"/date; d.mkdir(parents=True, exist_ok=True)
         o = outcomes.get(name, "ok")
@@ -177,8 +190,8 @@ def _fake_runner_factory(root, *, outcomes):
             status = "held" if o=="held" else "published"
             (d/"publish.json").write_text(json.dumps({"date":date,"status":status,"commit_sha":"abc"}))
             if status=="published":
-                (root/"content"/"news").mkdir(parents=True, exist_ok=True)
-                (root/"content"/"news"/f"{date}.md").write_text("x\n")
+                (root/"content"/"daily").mkdir(parents=True, exist_ok=True)
+                (root/"content"/"daily"/f"{date}.md").write_text("x\n")
                 _git_in(["add","-A"], root); _git_in(["commit","-qm",f"pub {date}"], root)
             return 0
     return runner
@@ -203,6 +216,20 @@ def test_run_held_does_not_push(tmp_path, monkeypatch):
     pushes = _spy_push(monkeypatch)
     m = orchestrate.run("2026-07-01", runner=_fake_runner_factory(root, outcomes={"publish":"held"}), now=_fixed_now())
     assert m["status"]=="held" and m["stages"]["push"]["status"]=="skipped" and pushes["n"]==0
+
+
+def test_run_empty_generation_is_held_before_validate_or_publish(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    calls = []
+    runner = _fake_runner_factory(root, outcomes={"stage": "empty"})
+    m = orchestrate.run(
+        "2026-07-01", prepare_only=True,
+        runner=lambda name, date: calls.append(name) or runner(name, date),
+        now=_fixed_now(),
+    )
+    assert m["status"] == "held" and calls == ["collect", "select", "stage"]
+    assert m["stages"]["validate"]["status"] == "skipped"
+    assert m["stages"]["publish"]["status"] == "skipped"
 
 def test_run_publish_crash_not_reported_published(tmp_path, monkeypatch):
     # a stale publish.json{published} + a crashed publish (rc!=0) must be FAILED, never pushed
@@ -262,7 +289,7 @@ def test_main_returns_exit_code(tmp_path, monkeypatch, capsys):
     root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
     monkeypatch.setattr(orchestrate, "run", lambda date, **kw: {"status":"held","stages":{},"reason":"floor","date":date})
     code = orchestrate.main(["--date","2026-07-01"])
-    assert code == 1   # held -> 1
+    assert code == 2   # held/failed -> 2
 
 def test_main_defaults_to_today(tmp_path, monkeypatch):
     root=_init_repo(tmp_path, monkeypatch)
@@ -276,20 +303,194 @@ def test_main_passes_flags(tmp_path, monkeypatch):
     root=_init_repo(tmp_path, monkeypatch)
     seen = {}
     monkeypatch.setattr(orchestrate, "run", lambda date, **kw: seen.update(kw=kw) or {"status":"published","stages":{},"reason":"","date":date})
-    orchestrate.main(["--date","2026-07-01","--force","--no-push"])
+    orchestrate.main(["--date","2026-07-01","--force","--no-push","--shadow"])
     assert seen["kw"]["force"] is True and seen["kw"]["no_push"] is True
+    assert seen["kw"]["shadow"] is True and seen["kw"]["prepare_only"] is False
+
+
+def test_main_publish_only_not_ready_exit_code(tmp_path, monkeypatch):
+    _init_repo(tmp_path, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(
+        orchestrate,
+        "run",
+        lambda date, **kw: seen.update(kw=kw) or
+        {"status":"not_ready","stages":{},"reason":"checkpoint missing","date":date},
+    )
+    assert orchestrate.main(["--date","2026-07-01","--publish-only"]) == 4
+    assert seen["kw"]["publish_only"] is True
+
+
+def test_prepare_only_never_calls_publish_push_or_email(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    calls=[]; emails=[]
+    base=_fake_runner_factory(root, outcomes={})
+    m=orchestrate.run(
+        "2026-08-01",
+        prepare_only=True,
+        shadow=True,
+        runner=lambda name, date: calls.append(name) or base(name, date),
+        email_runner=lambda date, run_id: emails.append(date) or (0, {"status":"sent"}),
+        now=_fixed_now(),
+    )
+    assert m["status"] == "prepared"
+    assert calls == ["collect", "select", "stage"]
+    assert m["stages"]["validate"]["status"] == "ok"
+    assert m["stages"]["publish"]["status"] == "skipped"
+    assert m["stages"]["push"]["status"] == "skipped" and emails == []
+    checkpoint=json.loads((root/"runs"/"2026-08-01"/"checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["date"] == "2026-08-01" and checkpoint["status"] == "validated"
+    assert checkpoint["input_hash"] and checkpoint["git_head"]
+
+
+def test_publish_only_requires_validated_checkpoint(tmp_path, monkeypatch):
+    _init_repo(tmp_path, monkeypatch)
+    calls=[]
+    m=orchestrate.run("2026-08-01", publish_only=True,
+                      runner=lambda name, date: calls.append(name) or 0, now=_fixed_now())
+    assert m["status"] == "not_ready" and calls == []
+
+
+def test_publish_only_resumes_at_publish_from_matching_checkpoint(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    base=_fake_runner_factory(root, outcomes={})
+    assert orchestrate.run("2026-08-01", prepare_only=True, runner=base, now=_fixed_now())["status"] == "prepared"
+    calls=[]
+    m=orchestrate.run("2026-08-01", publish_only=True, no_push=True,
+                      runner=lambda name, date: calls.append(name) or base(name, date), now=_fixed_now())
+    assert m["status"] == "published" and calls == ["publish"]
+    assert m["stages"]["validate"]["status"] == "ok"
+
+
+def test_publish_only_rejects_changed_input_or_git_head(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    base=_fake_runner_factory(root, outcomes={})
+    assert orchestrate.run("2026-08-01", prepare_only=True, runner=base, now=_fixed_now())["status"] == "prepared"
+    generation=root/"runs"/"2026-08-01"/"generation.json"
+    generation.write_text(generation.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    assert orchestrate.run("2026-08-01", publish_only=True, runner=base, now=_fixed_now())["status"] == "not_ready"
+    assert orchestrate.run("2026-08-02", prepare_only=True,
+                           runner=_fake_runner_factory(root, outcomes={}), now=_fixed_now())["status"] == "prepared"
+    (root/"head-change").write_text("x", encoding="utf-8")
+    _git_in(["add","-A"], root); _git_in(["commit","-qm","head change"], root)
+    assert orchestrate.run("2026-08-02", publish_only=True, runner=base, now=_fixed_now())["status"] == "not_ready"
+
+
+def test_publish_only_retry_pushes_existing_publish_commit(tmp_path, monkeypatch):
+    root, bare = _init_repo_with_remote(tmp_path, monkeypatch)
+    base = _fake_runner_factory(root, outcomes={})
+    assert orchestrate.run("2026-08-01", prepare_only=True,
+                           runner=base, now=_fixed_now())["status"] == "prepared"
+    _publish_news(root, "2026-08-01", pushed=False)
+    calls = []
+    monkeypatch.setattr(
+        orchestrate,
+        "_push",
+        lambda date: calls.append(date) or ("published", "deployed", "retry recovery"),
+    )
+    manifest = orchestrate.run(
+        "2026-08-01", publish_only=True,
+        runner=lambda name, date: (_ for _ in ()).throw(AssertionError("must not regenerate")),
+        email_runner=lambda date, run_id: (0, {"status": "already_sent"}),
+        now=_fixed_now(),
+    )
+    assert manifest["status"] == "published" and calls == ["2026-08-01"]
+    assert manifest["stages"]["push"]["status"] == "published"
+
+
+def test_prepare_checkpoint_runs_hugo_against_staging(tmp_path, monkeypatch):
+    root = _init_repo(tmp_path, monkeypatch)
+    date = "2026-08-01"
+    directory = root / "runs" / date
+    (directory / "staging").mkdir(parents=True)
+    (directory / "generation.json").write_text(
+        json.dumps({"date": date, "status": "ok", "results": []}), encoding="utf-8"
+    )
+    seen = {}
+    monkeypatch.setattr(
+        orchestrate.publish_mod,
+        "build_verify",
+        lambda gen, content_dir=None: seen.update(gen=gen, content_dir=content_dir) or [],
+    )
+    ok, reason, checkpoint = orchestrate._prepare_checkpoint(date, _fixed_now().isoformat())
+    assert ok, reason
+    assert seen["content_dir"] == directory / "staging"
+    assert checkpoint["validation"]["hugo"] == "ok"
+
+
+def test_prepare_checkpoint_rejects_dirty_site_configuration(tmp_path, monkeypatch):
+    root = _init_repo(tmp_path, monkeypatch)
+    date = "2026-08-01"
+    directory = root / "runs" / date
+    (directory / "staging").mkdir(parents=True)
+    (directory / "generation.json").write_text(
+        json.dumps({"date": date, "status": "ok", "results": []}), encoding="utf-8"
+    )
+    (root / "hugo.toml").write_text('baseURL = "https://example.test/"\n', encoding="utf-8")
+    ok, reason, checkpoint = orchestrate._prepare_checkpoint(date, _fixed_now().isoformat())
+    assert not ok and "site configuration dirty" in reason and checkpoint is None
 
 # --- Codex code-review coverage gaps ---
 
-def test_push_pushes_head_not_local_main(tmp_path, monkeypatch):
-    # BLOCK: _push must push the actual HEAD commit to origin main, even off a non-main branch
+def test_push_rejects_non_main_branch(tmp_path, monkeypatch):
     root, bare = _init_repo_with_remote(tmp_path, monkeypatch)   # on main
     _git_in(["checkout","-q","-b","feature"], root)              # move HEAD off main
     _publish_news(root, "2026-07-01", pushed=False)              # commit news on feature
-    head=_git_in(["rev-parse","HEAD"], root).stdout.strip()
-    status, sha, _ = orchestrate._push("2026-07-01")
-    assert status=="published" and sha==head
-    assert _git_in(["ls-remote","origin","refs/heads/main"], root).stdout.split()[0]==head
+    status, sha, reason = orchestrate._push("2026-07-01")
+    assert status=="push_rejected" and sha is None and "main" in reason
+    assert _git_in(["ls-remote","origin","refs/heads/main"], root).stdout.strip()==""
+
+
+def test_publish_only_without_date_adopts_today_or_yesterday_checkpoint(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    for date in ("2026-08-01", "2026-08-02"):
+        directory=root/"runs"/date; directory.mkdir(parents=True)
+        (directory/"checkpoint.json").write_text(json.dumps({
+            "version": 1, "date": date, "status": "validated"
+        }), encoding="utf-8")
+    assert orchestrate._latest_checkpoint_date("2026-08-02") == "2026-08-02"
+    (root/"runs"/"2026-08-02"/"checkpoint.json").unlink()
+    assert orchestrate._latest_checkpoint_date("2026-08-02") == "2026-08-01"
+    assert orchestrate._latest_checkpoint_date("2026-08-03") is None
+
+
+def test_main_publish_only_without_date_uses_latest_checkpoint(tmp_path, monkeypatch):
+    root=_init_repo(tmp_path, monkeypatch)
+    directory=root/"runs"/"2026-08-01"; directory.mkdir(parents=True)
+    (directory/"checkpoint.json").write_text(json.dumps({
+        "version": 1, "date": "2026-08-01", "status": "validated"
+    }), encoding="utf-8")
+    seen = {}
+    monkeypatch.setattr(orchestrate, "_today", lambda: "2026-08-02")
+    monkeypatch.setattr(orchestrate, "run", lambda date, **kw: seen.update(date=date) or {
+        "status":"published", "stages":{}, "reason":"", "date":date
+    })
+    assert orchestrate.main(["--publish-only"]) == 0
+    assert seen["date"] == "2026-08-01"
+
+
+def test_site_tree_gate_includes_section_indexes(monkeypatch):
+    calls = []
+    def fake_git(args, timeout=None):
+        calls.append(args)
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+    monkeypatch.setattr(orchestrate, "_git", fake_git)
+    assert orchestrate._site_tree_ready() == (True, "")
+    assert "content/daily/_index.md" in calls[0]
+    assert "content/articles/_index.md" in calls[0]
+
+
+def test_site_tree_gate_rejects_uninitialized_theme(monkeypatch):
+    def fake_git(args, timeout=None):
+        if args[:2] == ["ls-files", "--stage"]:
+            return type("R", (), {"returncode": 0, "stdout": "160000 abcdef 0\tthemes/PaperMod\n"})()
+        if args[:2] == ["submodule", "status"]:
+            return type("R", (), {"returncode": 0, "stdout": "-abcdef themes/PaperMod\n"})()
+        return type("R", (), {"returncode": 0, "stdout": ""})()
+    monkeypatch.setattr(orchestrate, "_git", fake_git)
+    assert orchestrate._site_tree_ready() == (
+        False, "PaperMod submodule is not initialized at the pinned commit"
+    )
 
 def test_decide_action_full_when_manifest_held(tmp_path, monkeypatch):
     # MAJOR: news in HEAD but publish.json says held (a later --force run) -> full, not push_only
@@ -342,6 +543,7 @@ def test_email_called_on_published(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ROOT", tmp_path); monkeypatch.setattr(orch, "ROOT", tmp_path)
     monkeypatch.setattr(orch, "run_dir", lambda d: tmp_path / "runs" / d)
     monkeypatch.setattr(orch, "decide_action", lambda date, *, force: "full")
+    monkeypatch.setattr(orch, "_prepare_checkpoint", lambda date, validated_at: (True, "", {}))
     monkeypatch.setattr(orch, "_push", lambda date: ("published", "abc", ""))
     calls = []
     m = orch.run("2026-07-03", runner=_email_full_runner(orch, "published"),
@@ -373,6 +575,7 @@ def test_email_not_called_on_held(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "ROOT", tmp_path); monkeypatch.setattr(orch, "ROOT", tmp_path)
     monkeypatch.setattr(orch, "run_dir", lambda d: tmp_path / "runs" / d)
     monkeypatch.setattr(orch, "decide_action", lambda date, *, force: "full")
+    monkeypatch.setattr(orch, "_prepare_checkpoint", lambda date, validated_at: (True, "", {}))
     calls = []
     m = orch.run("2026-07-03", runner=_email_full_runner(orch, "held"),
                  email_runner=lambda d, r: calls.append(1) or (0, {}))

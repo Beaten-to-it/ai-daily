@@ -1,21 +1,57 @@
-# v0 활성. RSS 코어 (죽은 피드는 Task 6 스모크에서 교체) + X(twitter) + Reddit(opencli).
 RSS_FEEDS = [
-    {"name":"OpenAI",        "url":"https://openai.com/news/rss.xml",                                  "source_type":"article"},
-    {"name":"GoogleAI",      "url":"https://blog.google/technology/ai/rss/",                           "source_type":"article"},
-    {"name":"HuggingFace",   "url":"https://huggingface.co/blog/feed.xml",                             "source_type":"article"},
-    {"name":"GeekNews",      "url":"https://feeds.feedburner.com/geeknews-feed",                       "source_type":"article"},
-    {"name":"HackerNews",    "url":"https://hnrss.org/frontpage",                                      "source_type":"article"},
-    {"name":"TheVerge AI",   "url":"https://www.theverge.com/rss/ai-artificial-intelligence/index.xml","source_type":"article"},
-    {"name":"TechCrunch AI", "url":"https://techcrunch.com/category/artificial-intelligence/feed/",    "source_type":"article"},
-    {"name":"arXiv cs.AI",   "url":"https://rss.arxiv.org/rss/cs.AI",                                  "source_type":"paper"},
-    {"name":"arXiv cs.CL",   "url":"https://rss.arxiv.org/rss/cs.CL",                                  "source_type":"paper"},
+    {"name": "OpenAI", "url": "https://openai.com/news/rss.xml",
+     "source_type": "article", "lane": "official"},
+    {"name": "Google AI", "url": "https://blog.google/technology/ai/rss/",
+     "source_type": "article", "lane": "official"},
+    {"name": "Hugging Face", "url": "https://huggingface.co/blog/feed.xml",
+     "source_type": "article", "lane": "official"},
+    {"name": "AWS ML", "url": "https://aws.amazon.com/blogs/machine-learning/feed/",
+     "source_type": "article", "lane": "official"},
+    {"name": "NVIDIA Developer", "url": "https://developer.nvidia.com/blog/feed/",
+     "source_type": "article", "lane": "official"},
+    {"name": "Google DeepMind", "url": "https://deepmind.google/blog/rss.xml",
+     "source_type": "article", "lane": "official"},
+    {"name": "GeekNews", "url": "https://feeds.feedburner.com/geeknews-feed",
+     "source_type": "article", "lane": "media"},
+    {"name": "The Verge AI", "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
+     "source_type": "article", "lane": "media"},
+    {"name": "TechCrunch AI", "url": "https://techcrunch.com/category/artificial-intelligence/feed/",
+     "source_type": "article", "lane": "media"},
+    {"name": "AI타임스", "url": "https://www.aitimes.com/rss/allArticle.xml",
+     "source_type": "article", "lane": "media"},
+    {"name": "arXiv cs.AI", "url": "https://rss.arxiv.org/rss/cs.AI",
+     "source_type": "paper", "lane": "research"},
+    {"name": "arXiv cs.CL", "url": "https://rss.arxiv.org/rss/cs.CL",
+     "source_type": "paper", "lane": "research"},
+    {"name": "GitHub Changelog", "url": "https://github.blog/changelog/feed/",
+     "source_type": "article", "lane": "developer"},
 ]
-# X (twitter CLI, 인증됨 @beaten2it) — v0 활성
+
+BLUESKY_ACCOUNTS = [
+    "simonwillison.net",
+    "emollick.bsky.social",
+    "hardmaru.bsky.social",
+    "jeremyphoward.bsky.social",
+    "jackclark.bsky.social",
+]
+
+GITHUB_REPOS = [
+    "openai/openai-python",
+    "anthropics/anthropic-sdk-python",
+    "huggingface/transformers",
+    "langchain-ai/langchain",
+    "ollama/ollama",
+]
+
+GDELT_QUERIES = [
+    '("artificial intelligence" OR "large language model" OR OpenAI OR Anthropic OR Gemini)',
+]
+
 X_QUERIES = [
     'AI agents OR "coding agents" OR agentic',
     '"Claude Code" OR Cursor OR Codex OR Windsurf',
     "OpenAI OR Anthropic OR Gemini OR Grok model",
     "open source LLM OR Qwen OR DeepSeek OR Mistral",
 ]
-# Reddit (opencli) — v0 활성(best-effort). Chrome+Browser-Bridge 미가동 시 collect에서 가드 스킵.
+
 REDDIT_SUBS = ["LocalLLaMA", "MachineLearning"]

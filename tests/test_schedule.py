@@ -8,7 +8,8 @@ def _git(cwd, *args):
 
 def _repo(tmp_path):
     r = tmp_path / "repo"
-    (r / "content" / "news").mkdir(parents=True)
+    for section in ("articles", "daily", "guides", "executive"):
+        (r / "content" / section).mkdir(parents=True)
     (r / "data").mkdir()
     _git(r, "init", "-q")
     _git(r, "config", "user.name", "t")
@@ -19,44 +20,33 @@ def _repo(tmp_path):
 
 def test_preflight_ok_on_clean_repo_with_identity(tmp_path, monkeypatch):
     r = _repo(tmp_path)
-    monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(schedule, "_git_credentials_present", lambda: True)
     res = schedule.preflight(root=r, date="2026-07-04")
-    assert res["ok"] is True and res["reddit_ok"] is True
+    assert res == {"ok": True, "reason": ""}
 
 def test_preflight_hard_fails_on_dirty_writeset(tmp_path, monkeypatch):
     r = _repo(tmp_path)
     monkeypatch.setattr(schedule, "_git_credentials_present", lambda: True)
-    (r / "content" / "news" / "2026-07-04.md").write_text("dirty")  # untracked write-set file for THIS date
+    (r / "content" / "daily" / "2026-07-04.md").write_text("dirty")
     res = schedule.preflight(root=r, date="2026-07-04")
     assert res["ok"] is False and "write-set" in res["reason"]
 
 def test_preflight_ignores_other_date_dirty(tmp_path, monkeypatch):
     # spec §241: write-set is date-scoped. An unrelated day's dirty draft must NOT abort today.
     r = _repo(tmp_path)
-    monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(schedule, "_git_credentials_present", lambda: True)
-    (r / "content" / "news" / "2026-07-05.md").write_text("dirty next-day draft")
+    (r / "content" / "daily" / "2026-07-05.md").write_text("dirty next-day draft")
     res = schedule.preflight(root=r, date="2026-07-04")
     assert res["ok"] is True
 
 def test_preflight_ignores_same_date_non_writeset(tmp_path, monkeypatch):
-    # news write-set is EXACT `{date}.md`; a same-date-PREFIX file (`{date}-notes.md`) is NOT
+    # daily write-set is EXACT `{date}.md`; a same-date-PREFIX file (`{date}-notes.md`) is NOT
     # in the write-set rollback touches, so it must not abort (mirrors publish.date_writeset).
     r = _repo(tmp_path)
-    monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(schedule, "_git_credentials_present", lambda: True)
-    (r / "content" / "news" / "2026-07-04-notes.md").write_text("scratch, not the published news file")
+    (r / "content" / "daily" / "2026-07-04-notes.md").write_text("scratch, not the published daily file")
     res = schedule.preflight(root=r, date="2026-07-04")
     assert res["ok"] is True
-
-def test_preflight_soft_when_no_display(tmp_path, monkeypatch):
-    r = _repo(tmp_path)
-    monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-    monkeypatch.setattr(schedule, "_git_credentials_present", lambda: True)
-    res = schedule.preflight(root=r, date="2026-07-04")
-    assert res["ok"] is True and res["reddit_ok"] is False  # soft: publish still proceeds
 
 def test_preflight_hard_fails_on_missing_identity(tmp_path, monkeypatch):
     # Neutralize the GLOBAL/SYSTEM gitconfig so a real dev machine's identity can't leak in and
@@ -64,7 +54,7 @@ def test_preflight_hard_fails_on_missing_identity(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
     r = tmp_path / "repo"
-    (r / "content" / "news").mkdir(parents=True)
+    (r / "content" / "daily").mkdir(parents=True)
     (r / "data").mkdir()
     _git(r, "init", "-q")
     (r / "data" / "published.csv").write_text("header\n")
@@ -82,13 +72,12 @@ def test_preflight_hard_fails_on_missing_credentials(tmp_path, monkeypatch):
     monkeypatch.setattr(schedule, "_git_credentials_present", lambda: False)
     res = schedule.preflight(root=r, date="2026-07-04")
     assert res["ok"] is False
-    assert "git-credentials" in res["reason"]
+    assert "credential" in res["reason"].lower()
 
-def test_preflight_hard_fails_on_dirty_post(tmp_path, monkeypatch):
+def test_preflight_hard_fails_on_dirty_article(tmp_path, monkeypatch):
     r = _repo(tmp_path)
     monkeypatch.setattr(schedule, "_git_credentials_present", lambda: True)
-    (r / "content" / "posts").mkdir(parents=True)
-    (r / "content" / "posts" / "2026-07-04-slug.md").write_text("dirty post")
+    (r / "content" / "articles" / "2026-07-04-slug.md").write_text("dirty article")
     res = schedule.preflight(root=r, date="2026-07-04")
     assert res["ok"] is False and "write-set" in res["reason"]
 
@@ -108,7 +97,7 @@ def test_preflight_fails_closed_on_git_status_error(tmp_path, monkeypatch):
 def test_run_tick_busy_probe_exits_without_running(monkeypatch):
     called = {"run": 0}
     monkeypatch.setattr(schedule, "_probe_free", lambda: False)   # a run holds the lock
-    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": True, "reason": "", "reddit_ok": True})
+    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": True, "reason": ""})
     rc = schedule.run_tick("2026-07-04", orchestrate_run=lambda *a, **k: called.__setitem__("run", 1) or {})
     assert rc == 3 and called["run"] == 0    # busy exit code, orchestrate never called
 
@@ -125,52 +114,23 @@ def test_run_tick_busy_when_another_tick_holds_schedule_lock(monkeypatch):
 
 def test_run_tick_preflight_hard_fail_aborts(monkeypatch):
     monkeypatch.setattr(schedule, "_probe_free", lambda: True)
-    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": False, "reason": "write-set dirty", "reddit_ok": False})
+    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": False, "reason": "write-set dirty"})
     ran = {"n": 0}
     rc = schedule.run_tick("2026-07-04", orchestrate_run=lambda *a, **k: ran.__setitem__("n", 1) or {})
     assert rc != 0 and ran["n"] == 0
 
 def test_run_tick_delegates_and_propagates_exit(monkeypatch):
     monkeypatch.setattr(schedule, "_probe_free", lambda: True)
-    # reddit_ok=False so that after Task 3 wires Chrome in, this test never launches a real one.
-    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": True, "reason": "", "reddit_ok": False})
+    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": True, "reason": ""})
     rc = schedule.run_tick("2026-07-04",
                            orchestrate_run=lambda date, **k: {"status": "published"})
     assert rc == 0   # orchestrate _STATUS_EXIT["published"] == 0
 
-def test_ensure_chrome_ready_returns_pid():
-    launched = {"n": 0}
-    def fake_launch(): launched["n"] += 1; return 4242
-    calls = {"n": 0}
-    def fake_probe():           # not ready first call, ready second
-        calls["n"] += 1; return calls["n"] >= 2
-    h = schedule.ensure_chrome(launcher=fake_launch, probe=fake_probe, timeout=5.0)
-    assert h == {"pid": 4242} and launched["n"] == 1
-
-def test_ensure_chrome_degrades_when_bridge_never_ready():
-    killed = {"pid": None}
-    h = schedule.ensure_chrome(launcher=lambda: 99, probe=lambda: False,
-                               killer=lambda handle: killed.__setitem__("pid", handle["pid"]), timeout=0.05)
-    assert h is None and killed["pid"] == 99     # timed out -> kill launched chrome, degrade
-
-def test_run_tick_launches_chrome_only_when_reddit_ok(monkeypatch):
-    monkeypatch.setattr(schedule, "_probe_free", lambda: True)
-    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": True, "reason": "", "reddit_ok": False})
-    launched = {"n": 0}
-    schedule.run_tick("2026-07-04",
-                      orchestrate_run=lambda d, **k: {"status": "published"},
-                      chrome=lambda **k: launched.__setitem__("n", 1) or {"pid": 1})
-    assert launched["n"] == 0    # reddit_ok False -> no Chrome
-
-def test_run_tick_tears_down_chrome_pid(monkeypatch):
-    monkeypatch.setattr(schedule, "_probe_free", lambda: True)
-    monkeypatch.setattr(schedule, "preflight", lambda root=None, date=None: {"ok": True, "reason": "", "reddit_ok": True})
-    killed = {"pid": None}
-    schedule.run_tick("2026-07-04",
-                      orchestrate_run=lambda d, **k: {"status": "published"},
-                      chrome=lambda **k: {"pid": 777},
-                      kill=lambda h: killed.__setitem__("pid", h["pid"]))
-    assert killed["pid"] == 777   # only its own launched pid
+def test_schedule_has_no_browser_bridge_runtime():
+    import inspect
+    source = inspect.getsource(schedule)
+    for banned in ("opencli", "google-chrome", "Browser-Bridge", "reddit_ok"):
+        assert banned not in source
 
 def test_check_alert_sends_once_when_unpublished(tmp_path, monkeypatch):
     monkeypatch.setattr(schedule, "_alert_ledger", lambda: tmp_path / "alert_log.csv")

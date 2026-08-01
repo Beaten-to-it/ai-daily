@@ -26,18 +26,18 @@ def _init_repo_with_origin(tmp_path):
     for k, v in (("user.email", "t@t"), ("user.name", "t"), ("commit.gpgsign", "false")):
         _git(work, "config", k, v)
     _git(work, "remote", "add", "origin", str(bare))
-    (work / "content" / "news").mkdir(parents=True)
-    (work / "content" / "usecase").mkdir(parents=True)
+    for section in ("daily", "guides", "executive"):
+        (work / "content" / section).mkdir(parents=True)
     return work
 
 
-def _publish_day(work, date, *, usecase=True):
+def _publish_day(work, date, *, derived=True):
     # mirror real content: YAML front matter with a title (subject_for reads it)
-    (work / "content" / "news" / f"{date}.md").write_text(
-        f'---\ntitle: "{date} News"\ntags: ["news"]\n---\n\n오늘의 항목:\n- x\n', encoding="utf-8")
-    if usecase:
-        (work / "content" / "usecase" / f"{date}.md").write_text(
-            f'---\ntitle: "{date} UseCase"\n---\n\n- y\n', encoding="utf-8")
+    (work / "content" / "daily" / f"{date}.md").write_text(
+        f'---\ntitle: "{date} Daily"\ntags: ["daily"]\n---\n\n오늘의 항목:\n- x\n', encoding="utf-8")
+    if derived:
+        (work / "content" / "guides" / f"{date}.md").write_text(
+            f'---\ntitle: "{date} Guide"\n---\n\n- y\n', encoding="utf-8")
     _git(work, "add", "-A"); _git(work, "commit", "-m", "pub")
     _git(work, "push", "origin", "HEAD:refs/heads/main")
 
@@ -54,13 +54,21 @@ def test_site_baseurl_matches_hugo():
 
 def test_paths_default_outside_repo(monkeypatch):
     from nbs import email as em
-    for v in ("AI_DAILY_GOOGLE_TOKEN", "AI_DAILY_GOOGLE_CLIENT_SECRET", "AI_DAILY_EMAIL_LOG"):
+    for v in ("AI_DAILY_CONFIG_DIR", "AI_DAILY_GOOGLE_TOKEN", "AI_DAILY_GOOGLE_CLIENT_SECRET", "AI_DAILY_EMAIL_LOG"):
         monkeypatch.delenv(v, raising=False)
-    home = Path.home()
-    assert em.token_path() == home / ".config" / "ai-daily" / "google_token.json"
-    assert em.client_secret_path() == home / ".config" / "ai-daily" / "client_secret.json"
-    assert em.ledger_path() == home / ".config" / "ai-daily" / "email_delivery_log.csv"
+    base = em.config_dir()
+    assert em.token_path() == base / "google_token.json"
+    assert em.client_secret_path() == base / "client_secret.json"
+    assert em.ledger_path() == base / "email_delivery_log.csv"
     assert config.ROOT not in em.token_path().parents
+
+
+@pytest.mark.skipif(_os.name != "nt", reason="Windows path contract")
+def test_windows_config_dir_uses_localappdata(monkeypatch, tmp_path):
+    from nbs import email as em
+    monkeypatch.delenv("AI_DAILY_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert em.config_dir() == tmp_path / "ai-daily"
 
 
 def test_paths_env_override(monkeypatch, tmp_path):
@@ -86,34 +94,39 @@ def test_read_content_from_origin_main(tmp_path, monkeypatch):
     from nbs import email as em, publish
     work = _init_repo_with_origin(tmp_path)
     monkeypatch.setattr(publish, "ROOT", work)
-    _publish_day(work, "2026-07-03", usecase=True)
+    _publish_day(work, "2026-07-03", derived=True)
     # mutate working tree AFTER push: read must come from origin/main, not disk
-    (work / "content" / "news" / "2026-07-03.md").write_text("TAMPERED", encoding="utf-8")
-    news, uc, ax = em.read_content("2026-07-03")
-    assert "News" in news and "TAMPERED" not in news
-    assert uc is not None and "UseCase" in uc
-    assert ax is None   # _publish_day writes no ax
+    (work / "content" / "daily" / "2026-07-03.md").write_text("TAMPERED", encoding="utf-8")
+    daily = em.read_content("2026-07-03")
+    assert "Daily" in daily and "TAMPERED" not in daily
 
 
-def test_read_content_news_only_when_no_usecase(tmp_path, monkeypatch):
+def test_read_content_daily_without_derived_pages(tmp_path, monkeypatch):
     from nbs import email as em, publish
     work = _init_repo_with_origin(tmp_path)
     monkeypatch.setattr(publish, "ROOT", work)
-    _publish_day(work, "2026-07-03", usecase=False)
-    news, uc, ax = em.read_content("2026-07-03")
-    assert uc is None and ax is None
+    _publish_day(work, "2026-07-03", derived=False)
+    assert "Daily" in em.read_content("2026-07-03")
 
 
-def test_read_content_includes_ax(tmp_path, monkeypatch):
+def test_read_content_ignores_guides_and_executive(tmp_path, monkeypatch):
     from nbs import email as em, publish
     work = _init_repo_with_origin(tmp_path)
     monkeypatch.setattr(publish, "ROOT", work)
-    _publish_day(work, "2026-07-03", usecase=True)
-    (work / "content" / "ax").mkdir(parents=True)
-    (work / "content" / "ax" / "2026-07-03.md").write_text("---\ntitle: AX\n---\n경영 본문\n", encoding="utf-8")
-    _git(work, "add", "-A"); _git(work, "commit", "-m", "ax"); _git(work, "push", "origin", "HEAD:refs/heads/main")
-    news, uc, ax = em.read_content("2026-07-03")
-    assert ax is not None and "경영 본문" in ax
+    _publish_day(work, "2026-07-03", derived=True)
+    (work / "content" / "executive" / "2026-07-03.md").write_text(
+        "---\ntitle: Executive\n---\n경영 본문\n", encoding="utf-8")
+    _git(work, "add", "-A"); _git(work, "commit", "-m", "executive"); _git(work, "push", "origin", "HEAD:refs/heads/main")
+    daily = em.read_content("2026-07-03")
+    assert "Daily" in daily and "Guide" not in daily and "경영 본문" not in daily
+
+
+def test_default_email_reads_daily_only(monkeypatch):
+    from nbs import email as em
+    seen = []
+    monkeypatch.setattr(em, "_origin_show", lambda path: seen.append(path) or "DAILY")
+    assert em.read_content("2026-08-01") == "DAILY"
+    assert seen == ["content/daily/2026-08-01.md"]
 
 
 # --- Task 3: preprocess ------------------------------------------------------
@@ -128,20 +141,20 @@ def test_strip_front_matter():
 
 def test_rewrite_relref_to_absolute():
     from nbs import email as em
-    md = '- **A** [자세히 →]({{< relref "/posts/2026-07-03-foo.md" >}})\n'
+    md = '- **A** [자세히 →]({{< relref "/articles/2026-07-03-foo.md" >}})\n'
     out = em.rewrite_relref(md)
-    assert "https://beaten-to-it.github.io/ai-daily/posts/2026-07-03-foo/" in out
+    assert "https://beaten-to-it.github.io/ai-daily/articles/2026-07-03-foo/" in out
     assert "relref" not in out
 
 
 def test_rewrite_relref_fails_on_residue():
     from nbs import email as em
     with pytest.raises(ValueError):
-        em.rewrite_relref('see [x]({{% relref "/posts/y.md" %}})')
+        em.rewrite_relref('see [x]({{% relref "/articles/y.md" %}})')
 
 
 def test_rewrite_relref_allows_non_ref_shortcode():
-    # a non-link Hugo shortcode (e.g. in claude -p usecase prose) must NOT error the email
+    # A non-link shortcode remains literal text; only broken ref/relref links are fatal.
     from nbs import email as em
     out = em.rewrite_relref("예시: {{< highlight py >}}code{{< /highlight >}}")
     assert "highlight" in out   # left as literal text, no raise
@@ -159,16 +172,16 @@ def test_subject_fallback_when_no_title():
 
 
 def test_rewrite_relref_on_real_assemble_output():
-    # contract: rewrite the EXACT output of assemble.build_news_index, not a copy.
+    # contract: rewrite the EXACT output of assemble.build_daily, not a copy.
     from nbs import email as em, assemble
     from nbs.models import GenerationResult
     r = GenerationResult(event_key="e1", title="T", url="http://x", source="s",
                          source_type="article", evidence_level="confirmed", status="ok",
-                         post_path="content/posts/2026-07-03-foo.md", slug="2026-07-03-foo",
+                         post_path="articles/2026-07-03-foo.md", slug="2026-07-03-foo",
                          rank=1, rationale="hook")
-    news = assemble.build_news_index([r], "2026-07-03")
+    news = assemble.build_daily([r], "2026-07-03")
     out = em.rewrite_relref(em.strip_front_matter(news))
-    assert "https://beaten-to-it.github.io/ai-daily/posts/2026-07-03-foo/" in out
+    assert "https://beaten-to-it.github.io/ai-daily/articles/2026-07-03-foo/" in out
     assert "relref" not in out
 
 
@@ -176,10 +189,10 @@ def test_rewrite_relref_on_real_assemble_output():
 
 def test_render_html_640_and_structure():
     from nbs import email as em
-    html = em.render_html("# T\n- a\n", "T", "https://beaten-to-it.github.io/ai-daily/news/2026-07-03/")
+    html = em.render_html("# T\n- a\n", "T", "https://beaten-to-it.github.io/ai-daily/daily/2026-07-03/")
     assert "max-width:640px" in html
     assert "<h1>" in html and "<li>" in html
-    assert "news/2026-07-03/" in html
+    assert "daily/2026-07-03/" in html
 
 
 def test_render_html_neutralizes_javascript_href():
@@ -217,8 +230,8 @@ def test_web_url_button_validated():
 
 def test_render_text_has_url_footer():
     from nbs import email as em
-    txt = em.render_text("body\n", "https://site/news/2026-07-03/")
-    assert "body" in txt and "https://site/news/2026-07-03/" in txt
+    txt = em.render_text("body\n", "https://site/daily/2026-07-03/")
+    assert "body" in txt and "https://site/daily/2026-07-03/" in txt
     assert "<" not in txt
 
 
@@ -267,14 +280,18 @@ def test_atomic_write_sets_600(tmp_path):
     p = tmp_path / "sub" / "t.json"
     em._atomic_write(p, '{"a":1}')
     assert p.read_text() == '{"a":1}'
-    assert (p.stat().st_mode & 0o777) == 0o600
+    if _os.name != "nt":
+        assert (p.stat().st_mode & 0o777) == 0o600
 
 
 def test_require_600_rejects_loose(tmp_path):
     from nbs import email as em
     p = tmp_path / "t.json"; p.write_text("x"); _os.chmod(p, 0o644)
-    with pytest.raises(PermissionError):
+    if _os.name == "nt":
         em._require_600(p)
+    else:
+        with pytest.raises(PermissionError):
+            em._require_600(p)
 
 
 def test_assert_send_only_rejects_broad_token(tmp_path):
@@ -293,7 +310,18 @@ def test_ensure_config_dir_is_700(tmp_path, monkeypatch):
     from nbs import email as em
     monkeypatch.setattr(em, "config_dir", lambda: tmp_path / "cfg")
     em._ensure_config_dir()
-    assert ((tmp_path / "cfg").stat().st_mode & 0o777) == 0o700
+    assert (tmp_path / "cfg").is_dir()
+    if _os.name != "nt":
+        assert ((tmp_path / "cfg").stat().st_mode & 0o777) == 0o700
+
+
+def test_load_credentials_rejects_token_inside_repo_before_imports(tmp_path, monkeypatch):
+    from nbs import email as em
+    token = tmp_path / "token.json"
+    token.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(config, "ROOT", tmp_path)
+    with pytest.raises(em.TokenInvalid, match="outside"):
+        em.load_credentials(token)
 
 
 # --- Task 7: ledger + run_email + CLI ----------------------------------------
@@ -324,7 +352,7 @@ def test_run_email_dry_run_composes_but_does_not_send(tmp_path, monkeypatch):
     _publish_day(work, "2026-07-03")
     r = em.run_email("2026-07-03", dry_run=True)
     assert r["status"] == "dry_run"
-    assert r["subject"] == "2026-07-03 News"
+    assert r["subject"] == "2026-07-03 Daily"
     assert em.already_sent("2026-07-03") is False   # dry-run must not record
 
 

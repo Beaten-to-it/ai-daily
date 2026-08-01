@@ -1,79 +1,128 @@
-import argparse, json, re, subprocess
+import argparse
+import json
+import re
 from pathlib import Path
-from .config import run_dir
-from .models import validate_selection, validate_against_candidates, canonicalize_url
+
+from . import codex_cli
 from . import ledger as ledger_mod
+from .config import run_dir
+from .models import (
+    candidate_id,
+    canonicalize_url,
+    materialize_selected,
+    validate_decision_coverage,
+    validate_decisions,
+    validate_selection,
+)
 
-PROMPT = Path(__file__).resolve().parent.parent / "prompts" / "select.md"
 
-def build_prompt_input(cands, digest, date):
-    payload={"date":date,"recent_ledger":digest,"candidates":cands}
+ROOT = Path(__file__).resolve().parent.parent
+PROMPT = ROOT / "prompts" / "select.md"
+SELECTION_SCHEMA = ROOT / "schemas" / "selection.schema.json"
+_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def build_prompt_input(candidates, digest, date):
+    payload = {"date": date, "recent_ledger": digest, "candidates": candidates}
     return PROMPT.read_text(encoding="utf-8").replace(
-        "<<INPUT>>", json.dumps(payload, ensure_ascii=False, indent=2)).replace("<DATE>", date)
+        "<<INPUT>>", json.dumps(payload, ensure_ascii=False, indent=2)
+    ).replace("<DATE>", date)
+
 
 def parse_selection(raw):
-    m=re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, re.S)
-    blob=m.group(1) if m else raw[raw.find("{"):raw.rfind("}")+1]
+    """Compatibility parser for archived model responses and fixtures."""
+    match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw, re.S)
+    blob = match.group(1) if match else raw[raw.find("{"):raw.rfind("}") + 1]
     return json.loads(blob)
 
-NOTOOLS = "__no_tools__"   # a dummy (non-existent) tool name -> claude resolves it to tools: []
-# WHY not `--tools ""`: claude CLI (2.1.198/200) DEADLOCKS on an EMPTY `--tools` arg + a large
-# stdin prompt (no output, no error, hangs to timeout) — the 2026-07-04 unattended smoke hung
-# select for 300s here, and it reproduces on a bare `claude -p --tools "" < big.txt`. A non-empty
-# dummy tool name avoids the empty-arg deadlock while giving the SAME zero-tools security: verified
-# tools: [] + 0 tool_use + injection refused (the §10 property `--tools ""` gave). --allowedTools ""
-# does NOT restrict (task-4-report.md Step 0), so this is the one that both blocks tools AND scales.
-def run_claude(text, timeout=300):
-    # select only needs text->JSON generation over untrusted RSS/X/Reddit candidate text; NOTOOLS
-    # zeroes tool_use (§10) so injected candidate text can't drive a tool.
-    # --effort low: PIN effort so claude -p does NOT inherit an interactive session's / settings.json
-    # effortLevel (e.g. xhigh). At xhigh, the 132-candidate dedup/rank task thinks >300s and times
-    # out (2026-07-04 P0: publish down). Selection is mechanical -> low completes in <90s. (Verified:
-    # low rc=0 5KB JSON; high >240s; xhigh timed out. Version-independent — 2.1.193..201 all hung at
-    # inherited xhigh.) Without --effort, env-unset does NOT help — settings.json effortLevel wins.
-    r=subprocess.run(["claude","-p","--tools",NOTOOLS,"--effort","low"], input=text, capture_output=True, text=True, timeout=timeout)
-    if r.returncode!=0: raise RuntimeError(f"claude -p failed: {r.stderr[:300]}")
-    return r.stdout
 
-# hard ceiling on items that reach generation. The prompt has no count limit, so a pathological
-# (or huge-news-day) selection could stage dozens of items; at GEN_TIMEOUT=900s x retry / 4 workers
-# that occupies the pipeline for hours while holding both locks and can miss the whole day. Observed
-# real days are 9-12 posts, so 20 keeps ample headroom while bounding worst case. Truncate by rank.
-MAX_SELECTED = 20
+def run_codex(text, date, timeout=300):
+    return codex_cli.run_json(
+        text,
+        SELECTION_SCHEMA,
+        run_dir(date) / "codex-work" / "selection",
+        timeout,
+    )
 
-def recount(obj):
-    items=obj.get("items",[])
-    obj["skipped_count"]=sum(1 for it in items if it.get("dedup")=="skip")
-    kept=[it for it in items if it.get("dedup")!="skip"]
-    kept.sort(key=lambda x:x.get("rank",999))
-    if len(kept) > MAX_SELECTED:
-        print(f"[select] capping {len(kept)} selected items to MAX_SELECTED={MAX_SELECTED} (by rank)")
-        kept=kept[:MAX_SELECTED]
-    obj["items"]=kept
-    obj["selected_count"]=len(obj["items"])
+
+def normalize_candidate(candidate):
+    normalized = dict(candidate)
+    normalized["canonical_url"] = canonicalize_url(normalized.get("url", ""))
+    expected_id = candidate_id(normalized.get("url", ""))
+    supplied_id = normalized.get("candidate_id")
+    if supplied_id and supplied_id != expected_id:
+        raise ValueError(f"candidate_id mismatch: {supplied_id}")
+    normalized["candidate_id"] = expected_id
+    normalized.setdefault("lane", "official")
+    normalized.setdefault("discovered_via", "")
+    return normalized
+
+
+def materialize_selection(model, candidates, date):
+    decisions_by_id = {row["candidate_id"]: row for row in model["decisions"]}
+    ordered_decisions = [decisions_by_id[candidate["candidate_id"]] for candidate in candidates]
+    items = [materialize_selected(candidate, decisions_by_id[candidate["candidate_id"]])
+             for candidate in candidates
+             if decisions_by_id[candidate["candidate_id"]]["decision"] == "select"]
+    items.sort(key=lambda item: item["rank"])
+    return {
+        "date": date,
+        "decisions": ordered_decisions,
+        "items": items,
+        "selected_count": len(items),
+        "skipped_count": len(ordered_decisions) - len(items),
+        "generated_with": model["generated_with"],
+    }
+
 
 def select(date):
-    cands=json.loads((run_dir(date)/"candidates.json").read_text(encoding="utf-8"))
-    if not cands:
-        obj={"date":date,"items":[],"selected_count":0,"skipped_count":0,"generated_with":"none(empty)"}
-        (run_dir(date)/"selection.json").write_text(json.dumps(obj,ensure_ascii=False,indent=2),encoding="utf-8")
-        return obj
-    digest=ledger_mod.ledger_digest(ledger_mod.read_recent(days=14, today=date))
-    obj=parse_selection(run_claude(build_prompt_input(cands, digest, date)))
-    errs=validate_selection(obj)
-    if errs: raise ValueError("selection schema invalid: "+"; ".join(errs[:8]))
-    # recount drops dedup:"skip" rows before membership check; skipped_count counts only explicit dedup:"skip" items
-    recount(obj)
-    cand_urls={canonicalize_url(c["url"]) for c in cands}
-    # source/source_type are the LLM's editorial classification (e.g. arXiv-via-HN => paper); grounded by URL membership, intentionally not overwritten from candidate.
-    errs=validate_against_candidates(obj, cand_urls)
-    if errs: raise ValueError("selection membership/uniqueness invalid: "+"; ".join(errs[:8]))
-    (run_dir(date)/"selection.json").write_text(json.dumps(obj,ensure_ascii=False,indent=2),encoding="utf-8")
-    return obj
+    directory = run_dir(date)
+    candidates = [normalize_candidate(candidate) for candidate in json.loads(
+        (directory / "candidates.json").read_text(encoding="utf-8")
+    )]
+    if not candidates:
+        result = {
+            "date": date,
+            "decisions": [],
+            "items": [],
+            "selected_count": 0,
+            "skipped_count": 0,
+            "generated_with": "local-empty",
+        }
+        (directory / "selection.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return result
 
-def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--date", required=True); a=ap.parse_args()
-    obj=select(a.date)
-    print(f"selected {obj['selected_count']} (skipped {obj['skipped_count']}) -> runs/{a.date}/selection.json")
+    digest = ledger_mod.ledger_digest(ledger_mod.read_recent(days=14, today=date))
+    model = run_codex(build_prompt_input(candidates, digest, date), date)
+    errors = validate_decisions(model)
+    if model.get("date") != date:
+        errors.append(f"date mismatch: {model.get('date')} != {date}")
+    errors.extend(validate_decision_coverage(model, candidates))
+    if errors:
+        raise ValueError("selection decisions invalid: " + "; ".join(errors[:12]))
 
-if __name__ == "__main__": main()
+    result = materialize_selection(model, candidates, date)
+    errors = validate_selection(result)
+    if errors:
+        raise ValueError("selection materialization invalid: " + "; ".join(errors[:12]))
+    (directory / "selection.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return result
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--date", required=True)
+    args = parser.parse_args(argv)
+    if not _DATE_RE.fullmatch(args.date or ""):
+        parser.error("--date must be YYYY-MM-DD")
+    result = select(args.date)
+    print(f"selected {result['selected_count']} (skipped {result['skipped_count']}) "
+          f"-> runs/{args.date}/selection.json")
+
+
+if __name__ == "__main__":
+    main()

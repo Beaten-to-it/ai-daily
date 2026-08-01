@@ -84,18 +84,22 @@ def test_fetch_item_excludes_on_total_failure(monkeypatch):
     r = fetch.fetch_item({"event_key":"k","url":"https://x.test","source_type":"article"})
     assert r.evidence_level == "exclude" and r.fetch_ok is False
 
-def test_extract_tweets_from_envelope():
-    raw = '{"ok":true,"data":[{"text":"We just shipped v2."},{"text":"Faster, cheaper."}]}'
-    out = fetch._extract_tweets(raw)
-    assert "We just shipped v2." in out and "Faster, cheaper." in out and "{" not in out
+def test_fetch_sns_uses_collected_snippet_without_cli(monkeypatch):
+    monkeypatch.setattr(fetch, "fetch_article", lambda url: (_ for _ in ()).throw(
+        AssertionError("collected social text should not need a second fetch")))
+    item = {"event_key": "k", "url": "https://x.com/a/status/1",
+            "source_type": "sns", "snippet": "tiny tweet"}
+    text, via, ok = fetch.fetch_sns(item)
+    result = fetch.fetch_item(item)
+    assert text == "tiny tweet" and via == "collected-snippet" and ok
+    assert result.evidence_level == "short"
 
-def test_fetch_sns_classifies_extracted_text_not_json(monkeypatch):
-    env = '{"ok":true,"data":[{"text":"tiny tweet"}]}'
-    class R: returncode=0; stdout=env; stderr=""
-    monkeypatch.setattr(fetch.subprocess, "run", lambda *a, **k: R())
-    text, via, ok = fetch.fetch_sns({"url":"https://x.com/a/status/1"})
-    r = fetch.fetch_item({"event_key":"k","url":"https://x.com/a/status/1","source_type":"sns"})
-    assert "tiny tweet" in text and "{" not in text and r.evidence_level == "short"
+
+def test_fetch_sns_falls_back_to_public_page(monkeypatch):
+    monkeypatch.setattr(fetch, "fetch_article", lambda url: ("public post", "jina", True))
+    assert fetch.fetch_sns({"url": "https://www.reddit.com/r/test/comments/1"}) == (
+        "public post", "jina", True
+    )
 
 def test_strip_srt_removes_timestamps_and_indices():
     srt = "1\n00:00:01,000 --> 00:00:03,000\nHello world\n\n2\n00:00:03,000 --> 00:00:05,000\nSecond line\n"

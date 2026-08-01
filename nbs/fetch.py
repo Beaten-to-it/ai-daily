@@ -3,7 +3,7 @@ import re
 MIN_ARTICLE_CHARS = 1200   # tunable — below this an article body isn't "full text"
 MIN_SHELL_CHARS = 200      # below this an HTML page is an empty JS shell / dead / stub
 MIN_ABSTRACT_CHARS = 400   # arXiv abstract floor for confirmed
-MAX_EVIDENCE_CHARS = 40000 # cap fed to claude -p (~10K tokens); long tail dropped
+MAX_EVIDENCE_CHARS = 40000  # cap fed to isolated Codex generation; long tail dropped
                            # ponytail: raise if detailed rewrites lose the article's end
 PAYWALL_MARKERS = (
     "subscribe to continue", "subscribe to read", "sign in to read",
@@ -41,7 +41,7 @@ def classify_evidence(source_type, text, *, paywall_marker=False, fetch_ok=True)
         return "exclude"
     return "confirmed" if n >= MIN_ARTICLE_CHARS else "short"
 
-import json, subprocess, tempfile, os, glob, urllib.request, time, socket, ipaddress
+import subprocess, tempfile, os, glob, urllib.request, time, socket, ipaddress
 from urllib.parse import urlsplit
 from .models import FetchResult
 
@@ -169,53 +169,15 @@ def fetch_paper(url):
     j = _jina(url)
     return (j, "arxiv", True) if _visible_len(j) >= MIN_SHELL_CHARS else ("", "arxiv", False)
 
-def _extract_tweets(raw):
-    try:
-        env = json.loads(raw)
-    except Exception:
-        return ""
-    data = env.get("data") if isinstance(env, dict) else env
-    if isinstance(data, dict):
-        data = [data]
-    parts = []
-    for t in (data or []):
-        if isinstance(t, dict):
-            parts.append(t.get("text") or t.get("full_text") or "")
-        elif isinstance(t, str):
-            parts.append(t)
-    return "\n\n".join(p for p in parts if p).strip()
-
 def fetch_sns(item):
     url = item.get("url", "")
-    # host match, NOT substring: `"x.com" in url` also matches notx.com/max.com — which the twitter
-    # CLI would then fetch by extracting the numeric id, publishing evidence unrelated to source_url.
-    if _host_in(url, ("x.com", "twitter.com")):
-        try:
-            # Step 0-verified: no `twitter thread` subcommand exists. `twitter tweet
-            # <url> --json` returns the same {"ok":..,"data":[...]} envelope; --max 1
-            # caps it to the target tweet only (default also pulls in public replies
-            # from unrelated users, which would pollute the evidence text).
-            r = subprocess.run(["twitter", "tweet", url, "--json", "--max", "1"],
-                               capture_output=True, text=True, timeout=60)
-            if r.returncode == 0 and r.stdout.strip():
-                text = _extract_tweets(r.stdout)
-                if text:
-                    return text, "twitter", True
-        except Exception:
-            pass
-        return "", "twitter", False
-    # reddit via opencli needs Chrome; guard-skip if unavailable. Restrict to reddit hosts so an
-    # arbitrary public url can't be handed to `opencli reddit read` (keeps this backend platform-scoped).
-    if not _host_in(url, ("reddit.com",)):
+    if not _host_in(url, ("x.com", "twitter.com", "reddit.com", "bsky.app",
+                          "news.ycombinator.com")):
         return "", "sns-bad-host", False
-    try:
-        r = subprocess.run(["opencli", "reddit", "read", url],
-                           capture_output=True, text=True, timeout=60)
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout, "opencli", True
-    except Exception:
-        pass
-    return "", "opencli", False
+    snippet = (item.get("snippet") or "").strip()
+    if snippet:
+        return snippet[:MAX_EVIDENCE_CHARS], "collected-snippet", True
+    return fetch_article(url)
 
 def _strip_srt(raw):
     # ponytail: containment-based dedup collapses rolling auto-caption overlap
@@ -283,8 +245,8 @@ _FETCHERS = {"article": lambda it: fetch_article(it["url"]),
 def fetch_item(item):
     st = item.get("source_type", "article")
     url = item.get("url", "")
-    # §10 trust boundary at DISPATCH — covers EVERY backend (http, jina, curl, yt-dlp, twitter,
-    # opencli), not just the http fetchers: (a) only http(s) — file://, ftp:// would read the local
+    # §10 trust boundary at DISPATCH — covers EVERY backend (http, jina, curl, yt-dlp), not just
+    # the http fetchers: (a) only http(s) — file://, ftp:// would read the local
     # FS; (b) the host must resolve to a public IP, else a video/sns candidate pointing at
     # 127.0.0.1 / RFC1918 / link-local metadata would let yt-dlp or the CLIs probe internal
     # services. (_jina fetches the target server-side, so ITS host is r.jina.ai — reached only after

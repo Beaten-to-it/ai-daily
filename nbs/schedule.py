@@ -1,10 +1,8 @@
-import os, subprocess, shutil, time, signal, argparse, csv, fcntl, contextlib
+import os, subprocess, shutil, time, argparse, csv
 from pathlib import Path
-from . import config
+from . import config, locking
 from . import orchestrate
 from . import email as _email
-
-_CHROME_PROFILE = _email.config_dir() / "chrome-profile"
 
 def _git(root, *args):
     # schedule runs only LOCAL git ops (status/config) — they fail fast, never hang, so no timeout.
@@ -13,18 +11,19 @@ def _git(root, *args):
                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
 
 def _git_credentials_present():
-    return (Path.home() / ".git-credentials").exists()
-
-def _display_present():
-    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    if any(os.environ.get(name) for name in ("GITHUB_TOKEN", "GH_TOKEN", "GIT_ASKPASS")):
+        return True
+    helper = _git(config.ROOT, "config", "--get-all", "credential.helper")
+    if helper.returncode == 0 and helper.stdout.strip():
+        return True
+    remote = _git(config.ROOT, "remote", "get-url", "origin")
+    return remote.returncode == 0 and remote.stdout.strip().startswith(("ssh://", "git@"))
 
 def _writeset(date):
-    # EXACTLY mirror publish.date_writeset (nbs/publish.py:98-106) — the set rollback touches.
-    # Broader (e.g. `{date}*`) would abort today over a same-date-PREFIX non-write-set draft;
-    # narrower would miss a file rollback clobbers. posts are `{date}-*.md`; news/usecase/ax are
-    # the exact `{date}.md`; published.csv (date's rows rewritten by rollback) is always included.
-    return [f"content/posts/{date}-*.md", f"content/news/{date}.md",
-            f"content/usecase/{date}.md", f"content/ax/{date}.md", "data/published.csv"]
+    # Date-scoped paths publish can promote, delete, or restore. Keep exact daily/derived names
+    # while allowing every same-date article that stale cleanup may remove.
+    return [f"content/articles/{date}-*.md", f"content/daily/{date}.md",
+            f"content/guides/{date}.md", f"content/executive/{date}.md", "data/published.csv"]
 
 def preflight(root=config.ROOT, date=None):
     date = date or "0000-00-00"   # caller (run_tick) passes the tick date; guard against None
@@ -35,29 +34,28 @@ def preflight(root=config.ROOT, date=None):
     if st.returncode != 0:
         # fail CLOSED: a git error must not be silently read as "clean" (spec §172's rollback
         # guard only holds if we actually know the write-set state).
-        return {"ok": False, "reason": f"git status failed: {st.stderr[:80]}", "reddit_ok": False}
+        return {"ok": False, "reason": f"git status failed: {st.stderr[:80]}"}
     dirty = st.stdout.strip()
     if dirty:
-        return {"ok": False, "reason": f"write-set dirty: {dirty.splitlines()[0]}", "reddit_ok": False}
+        return {"ok": False, "reason": f"write-set dirty: {dirty.splitlines()[0]}"}
     # 2) git identity + credentials (commit/push preconditions; push_only path needs these too).
     name = _git(root, "config", "user.name").stdout.strip()
     email = _git(root, "config", "user.email").stdout.strip()
     if not (name and email):
-        return {"ok": False, "reason": "git identity missing", "reddit_ok": False}
+        return {"ok": False, "reason": "git identity missing"}
     if not _git_credentials_present():
-        return {"ok": False, "reason": "~/.git-credentials missing", "reddit_ok": False}
+        return {"ok": False, "reason": "Git credential helper or token missing"}
     # SOFT (warn, never abort): a real hugo/deps miss is caught cleanly by orchestrate's
     # per-stage rc, and push_only/skip recovery doesn't need hugo — so these never gate the tick.
     if not shutil.which("hugo"):
         print("[preflight] warn: hugo not on PATH (a full run's build-verify would fail this tick)")
-    # display absence only disables Reddit (publish proceeds RSS+X).
-    return {"ok": True, "reason": "", "reddit_ok": _display_present()}
+    return {"ok": True, "reason": ""}
 
 BUSY_EXIT = 3   # matches orchestrate._STATUS_EXIT["busy"]
 
 def _probe_free():
     # Non-blocking probe of orchestrate's lock: acquire-and-release. If busy, a run is in
-    # progress -> caller must not launch Chrome. Tiny race (probe releases before
+    # progress. Tiny race (probe releases before
     # orchestrate.run re-acquires) is covered by no-manual-run-in-window; if it still races,
     # orchestrate.run returns status "busy" and run_tick propagates BUSY_EXIT anyway.
     try:
@@ -66,78 +64,10 @@ def _probe_free():
     except orchestrate.Busy:
         return False
 
-def _launch_chrome():
-    # Dedicated automation profile (isolated from daily browsing). Display env is pinned by
-    # the systemd unit (Environment=DISPLAY=:0 ...). start_new_session=True puts chrome in its
-    # OWN process group so teardown can reap the whole tree (chrome forks a browser + renderers;
-    # SIGTERM to just the launcher pid orphans children that keep the profile's SingletonLock,
-    # wedging every subsequent launch -> Reddit silently dead forever). Returns the launched pid.
-    p = subprocess.Popen(
-        ["google-chrome", f"--user-data-dir={_CHROME_PROFILE}",
-         "--no-first-run", "--no-default-browser-check", "--start-minimized"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-    return p.pid
-
-def _bridge_ready():
-    # opencli talks to Chrome via the Browser-Bridge extension (NOT a debug port). Ready iff a
-    # cheap opencli call does NOT emit BROWSER_CONNECT. (collect.py uses the same signal.)
-    # Bounded + errors swallowed so a hung/broken opencli can NEVER block the tick.
-    if not shutil.which("opencli"):
-        return False
-    try:
-        r = subprocess.run(["opencli", "reddit", "subreddit", "test", "--limit", "1", "-f", "json"],
-                           capture_output=True, text=True, timeout=15)
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-    return r.returncode == 0 and "BROWSER_CONNECT" not in (r.stdout + r.stderr)
-
-def _kill(handle):
-    # Kill the whole process group WE started (dedicated launch, start_new_session) so chrome's
-    # children die too and release the profile lock. Still "only ours" — never touches a
-    # browser another run/human started.
-    if handle and handle.get("pid"):
-        try:
-            os.killpg(os.getpgid(handle["pid"]), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError):
-            pass
-
-def ensure_chrome(*, launcher=_launch_chrome, probe=_bridge_ready, killer=_kill, timeout=30.0):
-    # MUST NEVER raise or hang the caller — Reddit must never block the daily publish. Any
-    # launcher/probe failure or timeout => tear down our Chrome (if launched) and degrade to
-    # RSS+X by returning None.
-    pid = None
-    try:
-        pid = launcher()
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if probe():
-                return {"pid": pid}
-            time.sleep(1.0)
-    except Exception:
-        pass
-    if pid is not None:
-        try:
-            killer({"pid": pid})   # bridge never came up / error -> degrade, don't hang the run
-        except Exception:
-            pass                   # even teardown must not raise out of ensure_chrome
-    return None
-
 _SCHEDULE_LOCK = config.ROOT / ".schedule.lock"
 
-@contextlib.contextmanager
 def _schedule_lock():
-    # Held for the ENTIRE tick (preflight -> chrome -> orchestrate -> teardown) so the 12:00
-    # alert's _wait_for_lock covers the pre-orchestrate window too (else a Persistent catch-up
-    # tick still in preflight/chrome looks idle and the alert false-fires). fd-flock = crash-safe.
-    f = open(_SCHEDULE_LOCK, "w")
-    try:
-        try:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            raise orchestrate.Busy("another schedule tick holds the lock")
-        yield
-    finally:
-        f.close()
+    return locking.exclusive_lock(_SCHEDULE_LOCK)
 
 def _schedule_busy():
     try:
@@ -146,30 +76,24 @@ def _schedule_busy():
     except orchestrate.Busy:
         return True
 
-def run_tick(date=None, *, orchestrate_run=None, pre=None, chrome=None, kill=None):
+def run_tick(date=None, *, orchestrate_run=None, pre=None):
     # IMPORTANT: default seams are None and resolved to module globals at CALL time, so that
     # `monkeypatch.setattr(schedule, "preflight", ...)` in tests actually takes effect. A
     # keyword default like `pre=preflight` binds the ORIGINAL function object at def time and
-    # would ignore the monkeypatch (and on the dev box run real preflight -> launch real Chrome).
+    # would ignore the monkeypatch.
     orchestrate_run = orchestrate_run or orchestrate.run
     pre = pre or preflight
-    chrome = chrome or ensure_chrome
-    kill = kill or _kill
     date = date or orchestrate._today()
     try:
         with _schedule_lock():
-            if not _probe_free():          # a manual orchestrate is running -> skip, no Chrome
+            if not _probe_free():
                 return BUSY_EXIT
             pf = pre(root=config.ROOT, date=date)
             if not pf["ok"]:
                 # hard fail: abort THIS tick (no partial writes); next tick retries.
                 print(f"[preflight] abort: {pf['reason']}")
                 return 2
-            handle = chrome() if pf["reddit_ok"] else None   # launch BEFORE orchestrate (collect connects to it)
-            try:
-                manifest = orchestrate_run(date)
-            finally:
-                kill(handle)                                  # tear down only our own pid group
+            manifest = orchestrate_run(date)
             status = (manifest or {}).get("status", "failed")
             return orchestrate._STATUS_EXIT.get(status, 1)
     except orchestrate.Busy:               # another schedule tick already running
@@ -199,20 +123,22 @@ def _alert_sent(date):
 def _record_alert(date, status):
     p = _alert_ledger()
     p.parent.mkdir(parents=True, exist_ok=True)   # the ledger's own dir (monkeypatched in tests)
-    try:
-        os.chmod(p.parent, 0o700)
-    except OSError:
-        pass
+    if os.name != "nt":
+        try:
+            os.chmod(p.parent, 0o700)
+        except OSError:
+            pass
     new = not p.exists()
     with open(p, "a", newline="") as f:
         w = csv.writer(f)
         if new:
             w.writerow(["date", "status"])
         w.writerow([date, status])
-    try:
-        os.chmod(p, 0o600)
-    except OSError:
-        pass
+    if os.name != "nt":
+        try:
+            os.chmod(p, 0o600)
+        except OSError:
+            pass
 
 def _wait_for_lock(timeout=300.0):
     # If a run is in flight at alert time, wait (bounded) for it to release the lock, so we

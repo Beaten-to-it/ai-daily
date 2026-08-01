@@ -1,4 +1,4 @@
-"""P3b: send the daily News+UseCase email via Gmail API.
+"""Send the daily-only edition via Gmail API.
 
 git-authoritative: send decision AND body are read from origin/main (survives
 runs/ scratch wipe). Secrets live OUTSIDE the repo (public Pages repo). google
@@ -26,6 +26,11 @@ from . import config, models, publish
 # --- paths (repo-external secrets/ledger; env overrides) ---------------------
 
 def config_dir() -> Path:
+    override = os.environ.get("AI_DAILY_CONFIG_DIR")
+    if override:
+        return Path(override)
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "ai-daily"
     return Path.home() / ".config" / "ai-daily"
 
 
@@ -48,37 +53,33 @@ _ORIGIN = "origin/main"
 
 def _origin_show(rel: str) -> str | None:
     # `git show origin/main:<rel>` is a LOCAL ref read (no network, no timeout under Option B), so a
-    # non-zero rc here is a genuine "absent" (rc 128) — usecase/ax legitimately absent -> section
-    # omitted. A corrupt-repo rc 128 read as "absent" is a pre-existing residual that git show's rc
-    # cannot distinguish from a real absence; accepted (extremely rare, and the news gate would also
-    # fail on the same corruption, blocking the email entirely rather than sending it truncated).
+    # non-zero rc here means the requested committed file is absent or unreadable. The required
+    # daily read fails closed in read_content rather than sending a partial email.
     r = publish._git(["show", f"{_ORIGIN}:{rel}"])
     return r.stdout if r.returncode == 0 else None
 
 
 def published(date: str) -> bool:
-    """True iff the day's news index exists on origin/main (git-authoritative)."""
-    return publish._git(["cat-file", "-e", f"{_ORIGIN}:content/news/{date}.md"]).returncode == 0
+    """True iff the day's daily edition exists on origin/main."""
+    return publish._git(["cat-file", "-e", f"{_ORIGIN}:content/daily/{date}.md"]).returncode == 0
 
 
-def read_content(date: str) -> tuple[str, str | None, str | None]:
-    """Return (news_md, usecase_md_or_None, ax_md_or_None) — all read from origin/main (gate ref)."""
-    news = _origin_show(f"content/news/{date}.md")
-    if news is None:
-        raise FileNotFoundError(f"origin/main has no content/news/{date}.md")
-    usecase = _origin_show(f"content/usecase/{date}.md")   # None => omit section
-    ax = _origin_show(f"content/ax/{date}.md")             # None => omit section
-    return news, usecase, ax
+def read_content(date: str) -> str:
+    """Return only the daily Markdown from origin/main."""
+    daily = _origin_show(f"content/daily/{date}.md")
+    if daily is None:
+        raise FileNotFoundError(f"origin/main has no content/daily/{date}.md")
+    return daily
 
 
 # --- preprocess (front-matter strip, relref->absolute, subject) --------------
 
-# Full shortcode = the exact ANGLE form assemble.build_news_index emits, built by
+# Full shortcode = the exact ANGLE form assemble.build_daily emits, built by
 # wrapping publish._RELREF's inner pattern (single source). Any OTHER shortcode
 # ({{% relref %}}, {{< ref >}}, malformed) is left un-rewritten and trips the guard.
 _RELREF_FULL = re.compile(r"\{\{<\s*" + publish._RELREF.pattern + r"\s*>\}\}")
 # Fail only on an un-rewritten ref/relref (= a broken POST link). Other Hugo shortcodes
-# that may appear in claude -p usecase prose ({{< highlight >}} etc.) are left as literal
+# that may appear in generated prose ({{< highlight >}} etc.) are left as literal
 # text — harmless, not a broken link — instead of erroring the whole email that day.
 _ANY_REF_SHORTCODE = re.compile(r"\{\{[<%]\s*/?\s*(?:rel)?ref\b")
 
@@ -97,14 +98,14 @@ def strip_front_matter(md: str) -> str:
 def rewrite_relref(md: str) -> str:
     """Rewrite our emitted relref shortcode to an absolute pretty URL; fail on any residue."""
     base = config.SITE_BASEURL.rstrip("/")
-    out = _RELREF_FULL.sub(lambda m: f"{base}/posts/{m.group(1)}/", md)
+    out = _RELREF_FULL.sub(lambda m: f"{base}/articles/{m.group(1)}/", md)
     if _ANY_REF_SHORTCODE.search(out):
         raise ValueError(f"unrewritten ref/relref shortcode remains (broken link): {out[:120]!r}")
     return out
 
 
-def subject_for(news_md: str, date: str) -> str:
-    title = models.parse_frontmatter_strict(news_md).get("title", "").strip()
+def subject_for(daily_md: str, date: str) -> str:
+    title = models.parse_frontmatter_strict(daily_md).get("title", "").strip()
     return title or f"[AI Daily] {date}"
 
 
@@ -279,16 +280,18 @@ class TokenInvalid(Exception):
 def _ensure_config_dir() -> None:
     d = config_dir()
     d.mkdir(parents=True, exist_ok=True)
-    os.chmod(d, 0o700)   # secret dir not group/world accessible
+    if os.name != "nt":
+        os.chmod(d, 0o700)
 
 
 def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.parent == config_dir():
+    if os.name != "nt" and path.parent == config_dir():
         os.chmod(path.parent, 0o700)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent))
     try:
-        os.chmod(tmp, mode)
+        if os.name != "nt":
+            os.chmod(tmp, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
         os.replace(tmp, path)
@@ -298,6 +301,8 @@ def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
 
 
 def _require_600(path: Path) -> None:
+    if os.name == "nt":
+        return
     m = path.stat().st_mode
     if m & (stat.S_IRWXG | stat.S_IRWXO):
         raise PermissionError(f"{path} is group/world accessible; run: chmod 600 {path}")
@@ -313,11 +318,16 @@ def _assert_send_only(path: Path) -> None:
 
 def load_credentials(path: Path | None = None):
     """Load token; verify send-only scope; refresh if expired (atomic write-back); enforce chmod 600."""
+    path = path or token_path()
+    try:
+        path.resolve().relative_to(config.ROOT.resolve())
+    except ValueError:
+        pass
+    else:
+        raise TokenInvalid("Google token must be stored outside the repository")
     from google.oauth2.credentials import Credentials       # lazy
     from google.auth.transport.requests import Request
     from google.auth.exceptions import RefreshError
-
-    path = path or token_path()
     if not path.exists():
         raise TokenInvalid(f"no token at {path}. Run: python3 scripts/reauth_google.py")
     _require_600(path)
@@ -350,20 +360,22 @@ def already_sent(date: str, ledger: Path | None = None) -> bool:
 def record_sent(date, run_id, recipients, subject, gmail_ids, message_id, status, ledger: Path | None = None) -> None:
     ledger = ledger or ledger_path()
     ledger.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(ledger.parent, 0o700)
-    except OSError:
-        pass
+    if os.name != "nt":
+        try:
+            os.chmod(ledger.parent, 0o700)
+        except OSError:
+            pass
     new = not ledger.exists()
     with ledger.open("a", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
         if new:
             w.writerow(_LEDGER_HEADER)
         w.writerow([date, run_id, "|".join(recipients), subject, "|".join(gmail_ids), message_id, status])
-    try:
-        os.chmod(ledger, 0o600)   # ledger holds recipients/subject (PII) — enforce 0600 (§10)
-    except OSError:
-        pass
+    if os.name != "nt":
+        try:
+            os.chmod(ledger, 0o600)
+        except OSError:
+            pass
 
 
 def _gmail_send(creds, message: dict, sender: str) -> str:
@@ -380,16 +392,12 @@ def run_email(date, *, to="", dry_run=False, force=False, run_id=None) -> dict:
     out = {"date": date, "status": "error", "reason": "", "recipients": [], "subject": "",
            "ids": [], "message_id": ""}
     if not published(date):
-        out["status"] = "not_published"; out["reason"] = "origin/main has no news for date"
+        out["status"] = "not_published"; out["reason"] = "origin/main has no daily for date"
         return out
-    news_md, usecase_md, ax_md = read_content(date)
-    subject = subject_for(news_md, date)
-    web_url = f"{config.SITE_BASEURL.rstrip('/')}/news/{date}/"
-    body_md = preprocess(news_md)
-    if usecase_md is not None:
-        body_md += "\n\n---\n\n" + preprocess(usecase_md)
-    if ax_md is not None:
-        body_md += "\n\n---\n\n" + preprocess(ax_md)
+    daily_md = read_content(date)
+    subject = subject_for(daily_md, date)
+    web_url = f"{config.SITE_BASEURL.rstrip('/')}/daily/{date}/"
+    body_md = preprocess(daily_md)
     html_body = render_html(body_md, subject, web_url)
     text_body = render_text(body_md, web_url)
     recipients = resolve_recipients(to)
