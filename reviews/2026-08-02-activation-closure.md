@@ -59,3 +59,25 @@ and remained unchanged.
 Critical = 0 and High = 0 on the latest corrected artifact. The code and review
 gate passes. Live publication still requires main integration, a validated
 Prepare checkpoint, and successful external-state checks.
+
+## Live Prepare Regression Closure
+
+The first real Prepare generated 33 articles but Hugo rejected three model
+outputs with one leading space before `date:`. The shared generation seam now
+normalizes ASCII front-matter keys to column zero; the body remains unchanged.
+
+- Parent HEAD: `321e6058309a675e355c2dd2d4980dd74bc815ec`
+- Reviewed files: `nbs/generate.py`, `tests/test_generate.py`
+- Composite SHA-256: `57B95B8F35EC8201CF89DBCB9C542A4D091F775B8EB25F56775EBC96BAC40C10`
+- Session: `68c6b6b0-f4d4-43d0-89d9-bae4e16b7047`
+- Result UUID: `57ded6d9-177e-4e9f-9379-926442cd4360`
+- Duration: `277251 ms`
+- Requested and resolved model: `claude-opus-5`
+- Effort: `xhigh`
+- Result: Critical 0, High 0, issue CLOSED, PASS
+
+`modelUsage` contained only `claude-opus-5`. After mechanically applying the
+same normalization to the ignored staging files, Hugo rendered all 33 articles
+and the home RSS contained only daily item link/guid targets. The reviewer left
+two Low follow-ups: add a standalone non-title indentation test, and share the
+article duplicate-key guard with derived documents. Neither is gating.

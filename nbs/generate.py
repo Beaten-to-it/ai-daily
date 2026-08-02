@@ -64,8 +64,9 @@ def _sanitize_title(md):
     # (comment). title is the only free-text front-matter field (others are enums/URL/list/
     # date we control), so re-emit its value as a single-quoted YAML scalar: only `'` needs
     # doubling, and a literal `"` is harmless inside single quotes. Matches an optionally
-    # indented title with optional space before the colon (parse_frontmatter accepts those,
-    # so Hugo sees them too) and preserves the indent. Block scalars are rejected because
+    # indented keys with optional space before the colon (parse_frontmatter accepts those)
+    # are normalized to column zero because Hugo rejects mixed top-level indentation.
+    # Block scalars are rejected because
     # their payload could look like trusted front-matter keys to our line parser. Unwrapping
     # a single-quoted scalar un-doubles `''`, so the fix is idempotent on its own output.
     # `tags` is the other free-text field; switch to a real YAML dump if it ever needs
@@ -83,6 +84,7 @@ def _sanitize_title(md):
             raw = raw[1:-1]                        # unwrap a double-quoted scalar (backslash-escapes: accepted ceiling)
         return f"{indent}title: '" + raw.replace("'", "''") + "'"
     fm = re.sub(r"(?m)^([ \t]*)title[ \t]*:(.*)$", _repl, parts[0])
+    fm = re.sub(r"(?m)^[ \t]+(?=[A-Za-z_][A-Za-z0-9_-]*[ \t]*:)", "", fm)
     return "---\n" + fm + "\n---\n" + parts[1]
 
 def _strip_fences(raw):

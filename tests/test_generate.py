@@ -171,11 +171,10 @@ def test_sanitize_title_escapes_apostrophe_and_unwraps_clean():
     assert generate._sanitize_title("---\ntitle: Cost #1\n---\nb\n") \
         == "---\ntitle: 'Cost #1'\n---\nb\n"
 
-def test_sanitize_title_handles_indent_and_space_before_colon():
-    # BLOCK (codex R1): parse_frontmatter accepts an indented title / `title :` with a space,
-    # so Hugo sees it too -- the sanitizer must match those forms and preserve indentation.
+def test_sanitize_title_normalizes_frontmatter_key_indent_and_space_before_colon():
+    # The lenient parser accepts indented keys, but Hugo rejects mixed top-level indentation.
     assert generate._sanitize_title('---\n  title: "A"는 B\n  date: d\n---\nb\n') \
-        == '''---\n  title: '"A"는 B'\n  date: d\n---\nb\n'''
+        == '''---\ntitle: '"A"는 B'\ndate: d\n---\nb\n'''
     assert generate._sanitize_title('---\ntitle : "A"는 B\n---\nb\n') \
         == '''---\ntitle: '"A"는 B'\n---\nb\n'''
 
