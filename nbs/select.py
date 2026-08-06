@@ -58,6 +58,19 @@ def normalize_candidate(candidate):
     return normalized
 
 
+def collapse_identical_decisions(model):
+    if not isinstance(model, dict) or not isinstance(model.get("decisions"), list):
+        return model
+    seen = set()
+    decisions = []
+    for row in model["decisions"]:
+        key = json.dumps(row, ensure_ascii=False, sort_keys=True)
+        if key not in seen:
+            seen.add(key)
+            decisions.append(row)
+    return {**model, "decisions": decisions}
+
+
 def materialize_selection(model, candidates, date):
     decisions_by_id = {row["candidate_id"]: row for row in model["decisions"]}
     ordered_decisions = [decisions_by_id[candidate["candidate_id"]] for candidate in candidates]
@@ -95,7 +108,9 @@ def select(date):
         return result
 
     digest = ledger_mod.ledger_digest(ledger_mod.read_recent(days=14, today=date))
-    model = run_codex(build_prompt_input(candidates, digest, date), date)
+    model = collapse_identical_decisions(
+        run_codex(build_prompt_input(candidates, digest, date), date)
+    )
     errors = validate_decisions(model)
     if model.get("date") != date:
         errors.append(f"date mismatch: {model.get('date')} != {date}")

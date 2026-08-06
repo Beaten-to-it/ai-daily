@@ -128,3 +128,21 @@ def test_select_materializes_immutable_candidate_fields(tmp_path, monkeypatch):
     assert item["url"] == candidate["url"]
     assert item["source"] == candidate["source"]
     assert result["decisions"] == [decision]
+
+
+def test_select_collapses_identical_duplicate_decision(tmp_path, monkeypatch):
+    date = "2026-08-07"
+    directory = tmp_path / date
+    directory.mkdir(parents=True)
+    candidate = _candidate(1)
+    (directory / "candidates.json").write_text(json.dumps([candidate]), encoding="utf-8")
+    decision = _decision(candidate)
+    model = {"date": date, "decisions": [decision, dict(decision)],
+             "generated_with": "codex-exec"}
+    monkeypatch.setattr(select, "run_dir", lambda value: directory)
+    monkeypatch.setattr(select, "run_codex", lambda prompt, value: model)
+    monkeypatch.setattr(select.ledger_mod, "read_recent", lambda **kwargs: [])
+
+    result = select.select(date)
+
+    assert result["decisions"] == [decision]
